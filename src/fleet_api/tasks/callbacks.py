@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -43,7 +44,7 @@ MAX_ATTEMPTS = len(RETRY_DELAYS) + 1  # 1 initial + 3 retries
 # ---------------------------------------------------------------------------
 
 
-def build_callback_payload(task: Task) -> dict:
+def build_callback_payload(task: Task) -> dict[str, Any]:
     """Build the JSON payload sent to the callback_url.
 
     Contains the task's terminal state, result, and metadata
@@ -51,7 +52,7 @@ def build_callback_payload(task: Task) -> dict:
     """
     status_value = task.status.value if hasattr(task.status, "value") else str(task.status)
 
-    payload: dict = {
+    payload: dict[str, Any] = {
         "task_id": task.id,
         "workflow_id": task.workflow_id,
         "status": status_value,
@@ -148,7 +149,7 @@ async def deliver_callback(task: Task) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def schedule_callback(task: Task) -> asyncio.Task | None:
+def schedule_callback(task: Task) -> asyncio.Task[bool] | None:
     """Schedule callback delivery as a background asyncio task.
 
     Returns the :class:`asyncio.Task` if a callback was scheduled,
