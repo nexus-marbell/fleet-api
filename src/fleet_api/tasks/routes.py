@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.database.connection import get_session
-from fleet_api.tasks.models import Task
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
+from fleet_api.tasks.models import Task
 from fleet_api.tasks.service import (
     TaskService,
     cancel_task,

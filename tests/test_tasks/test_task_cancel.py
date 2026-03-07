@@ -31,7 +31,6 @@ from fleet_api.errors import AuthError, ErrorCode, NotFoundError, StateError
 from fleet_api.middleware.auth import AuthenticatedAgent, get_agent_lookup, require_auth
 from fleet_api.tasks.models import Task, TaskPriority, TaskStatus
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -143,7 +142,10 @@ class TestCancelFromTerminalStates:
     """Cancel from completed, failed, or cancelled states returns 409."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled", "retasked", "redirected"])
+    @pytest.mark.parametrize(
+        "terminal_status",
+        ["completed", "failed", "cancelled", "retasked", "redirected"],
+    )
     async def test_cancel_from_terminal_state(self, terminal_status: str) -> None:
         """POST cancel on a {terminal_status} task returns 409 TASK_NOT_PAUSABLE."""
         app = _create_test_app()
