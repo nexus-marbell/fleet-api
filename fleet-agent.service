@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet Agent Sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/fleet-agent/env
+# ExecStart assumes container deployment (Dokploy). For bare-metal, adjust to venv path.
+ExecStart=/usr/bin/python -m fleet_agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

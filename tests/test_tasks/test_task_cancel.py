@@ -147,14 +147,14 @@ class TestCancelFromTerminalStates:
         ["completed", "failed", "cancelled", "retasked", "redirected"],
     )
     async def test_cancel_from_terminal_state(self, terminal_status: str) -> None:
-        """POST cancel on a {terminal_status} task returns 409 TASK_NOT_PAUSABLE."""
+        """POST cancel on a {terminal_status} task returns 409 INVALID_STATE_TRANSITION."""
         app = _create_test_app()
 
         with patch(
             "fleet_api.tasks.routes.cancel_task",
             new_callable=AsyncMock,
             side_effect=StateError(
-                code=ErrorCode.TASK_NOT_PAUSABLE,
+                code=ErrorCode.INVALID_STATE_TRANSITION,
                 message=(
                     f"Task '{TASK_ID}' cannot be cancelled. "
                     f"Current status: '{terminal_status}'. "
@@ -171,7 +171,7 @@ class TestCancelFromTerminalStates:
 
             assert response.status_code == 409
             data = response.json()
-            assert data["code"] == "TASK_NOT_PAUSABLE"
+            assert data["code"] == "INVALID_STATE_TRANSITION"
             assert TASK_ID in data["message"]
             assert terminal_status in data["message"]
 

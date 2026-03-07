@@ -5,7 +5,7 @@ from typing import Any
 
 
 class ErrorCode(StrEnum):
-    """All 25 fleet-api error codes (24 from RFC 1 S8 + AGENT_EXISTS)."""
+    """All 26 fleet-api error codes (24 from RFC 1 S8 + AGENT_EXISTS + INVALID_STATE_TRANSITION)."""
 
     # Routing
     ENDPOINT_NOT_FOUND = "ENDPOINT_NOT_FOUND"
@@ -46,6 +46,7 @@ class ErrorCode(StrEnum):
     DEPRECATED_PATH = "DEPRECATED_PATH"
 
     # State
+    INVALID_STATE_TRANSITION = "INVALID_STATE_TRANSITION"
     TASK_NOT_PAUSABLE = "TASK_NOT_PAUSABLE"
     TASK_NOT_PAUSED = "TASK_NOT_PAUSED"
     PAUSE_TIMEOUT = "PAUSE_TIMEOUT"
@@ -75,6 +76,7 @@ ERROR_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.AGENT_SUSPENDED: 503,
     ErrorCode.BAD_GATEWAY: 502,
     ErrorCode.DEPRECATED_PATH: 301,
+    ErrorCode.INVALID_STATE_TRANSITION: 409,
     ErrorCode.TASK_NOT_PAUSABLE: 409,
     ErrorCode.TASK_NOT_PAUSED: 409,
     ErrorCode.PAUSE_TIMEOUT: 408,
