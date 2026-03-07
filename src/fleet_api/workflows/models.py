@@ -24,6 +24,7 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     owner_agent_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("agents.id"), nullable=False
     )
