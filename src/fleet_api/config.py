@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     fleet_task_retention_days: int = 30
     fleet_retask_max_depth: int = 10
     fleet_delegation_max_depth: int = 4
-    fleet_heartbeat_timeout_seconds: int = 300
+    fleet_heartbeat_timeout_seconds: int = 90
+    fleet_heartbeat_sweep_interval: int = 30
     fleet_pause_ttl_seconds: int = 3600
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

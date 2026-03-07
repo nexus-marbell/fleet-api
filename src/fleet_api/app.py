@@ -1,14 +1,17 @@
 """FastAPI application factory."""
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fleet_api.agents.heartbeat_monitor import heartbeat_monitor
 from fleet_api.agents.routes import router as agents_router
 from fleet_api.agents.service import DatabaseAgentLookup
-from fleet_api.database.connection import get_session
+from fleet_api.config import settings
+from fleet_api.database.connection import async_session, get_session
 from fleet_api.health import health_router
 from fleet_api.manifest import router as manifest_router
 from fleet_api.middleware.auth import AgentLookup, get_agent_lookup
@@ -20,9 +23,19 @@ from fleet_api.workflows.routes import router as workflows_router
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup and shutdown."""
-    # Startup: initialize database connection pool
+    # Startup: launch heartbeat monitor background task
+    monitor_task = asyncio.create_task(
+        heartbeat_monitor(
+            async_session,
+            timeout_seconds=settings.fleet_heartbeat_timeout_seconds,
+            sweep_interval=settings.fleet_heartbeat_sweep_interval,
+        )
+    )
     yield
-    # Shutdown: dispose database connection pool
+    # Shutdown: cancel the heartbeat monitor
+    monitor_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await monitor_task
 
 
 async def _get_database_agent_lookup(
