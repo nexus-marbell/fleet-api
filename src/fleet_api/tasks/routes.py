@@ -77,7 +77,10 @@ def get_task_service(
 
 
 def build_cancel_links(task_id: str, workflow_id: str) -> dict[str, Any]:
-    """Build HATEOAS _links for a cancelled task response."""
+    """Build HATEOAS _links for a cancelled task response.
+
+    Cancelled is a terminal state — only self + workflow links, no action links.
+    """
     return {
         "self": {"href": f"/workflows/{workflow_id}/tasks/{task_id}"},
         "workflow": {"href": f"/workflows/{workflow_id}"},
