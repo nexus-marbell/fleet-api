@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     fleet_heartbeat_sweep_interval: int = 30
     fleet_pause_ttl_seconds: int = 3600
 
+    # SSE streaming
+    fleet_sse_heartbeat_interval: int = 15
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

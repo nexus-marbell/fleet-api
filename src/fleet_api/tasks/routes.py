@@ -27,6 +27,7 @@ from fleet_api.tasks.service import (
     task_to_detail_response,
     task_to_summary_response,
 )
+from fleet_api.tasks.sse import stream_task_events
 
 router = APIRouter(tags=["tasks"])
 
@@ -325,3 +326,20 @@ async def post_task_event(
             "events": {"href": f"/tasks/{task.id}/events"},
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /workflows/{workflow_id}/tasks/{task_id}/stream (SSE) — Phase 2 Unit 1
+# ---------------------------------------------------------------------------
+
+router.add_api_route(
+    "/workflows/{workflow_id}/tasks/{task_id}/stream",
+    stream_task_events,
+    methods=["GET"],
+    tags=["tasks"],
+    summary="Stream task events via SSE",
+    description=(
+        "Server-Sent Events stream for task lifecycle events. "
+        "Supports reconnection via Last-Event-Id header."
+    ),
+)

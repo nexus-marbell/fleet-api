@@ -684,7 +684,8 @@ class TaskService:
 
 # Valid sidecar event types.
 _VALID_EVENT_TYPES: frozenset[str] = frozenset(
-    {"status", "progress", "log", "completed", "failed", "heartbeat"}
+    {"status", "progress", "log", "completed", "failed", "heartbeat",
+     "context_injected", "escalation"}
 )
 
 
