@@ -11,8 +11,12 @@ Status graduation:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -21,6 +25,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.database.connection import get_session
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-level start time (set on import — closest to process boot)
@@ -36,11 +42,14 @@ _START_WALL: datetime = datetime.now(UTC)
 health_router = APIRouter(tags=["health"])
 
 # ---------------------------------------------------------------------------
-# Version — mirrors pyproject.toml; kept as a constant to avoid
-# runtime inspection overhead on every healthcheck.
+# Version — sourced from package metadata (pyproject.toml) so it
+# cannot silently diverge on version bump.
 # ---------------------------------------------------------------------------
 
-_VERSION = "0.1.0"
+try:
+    _VERSION = _pkg_version("fleet-api")
+except PackageNotFoundError:
+    _VERSION = "0.0.0-dev"
 
 
 # ---------------------------------------------------------------------------
@@ -51,18 +60,28 @@ _VERSION = "0.1.0"
 async def _check_database(session: AsyncSession) -> dict[str, Any]:
     """Execute SELECT 1 and measure round-trip latency.
 
+    Enforces a 5-second timeout per RFC requirement.
     Returns a component status dict. Never raises.
     """
+    t0 = time.monotonic()
     try:
-        t0 = time.monotonic()
-        await session.execute(text("SELECT 1"))
+        await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=5.0)
         latency_ms = round((time.monotonic() - t0) * 1000)
         return {
             "status": "operational",
             "latency_ms": latency_ms,
             "last_successful_query": datetime.now(UTC).isoformat(),
         }
+    except asyncio.TimeoutError:
+        latency_ms = round((time.monotonic() - t0) * 1000)
+        logger.error("Database health check timed out after 5s")
+        return {
+            "status": "degraded",
+            "latency_ms": latency_ms,
+            "error": "timeout",
+        }
     except Exception as exc:
+        logger.error("Database health check failed: %s", exc)
         return {
             "status": "unhealthy",
             "error": str(exc),
@@ -116,6 +135,7 @@ async def health(session: AsyncSession = Depends(get_session)) -> JSONResponse:
         "_links": {
             "self": "/health",
             "manifest": "/manifest",
+            "status_page": "/status",
         },
     }
 

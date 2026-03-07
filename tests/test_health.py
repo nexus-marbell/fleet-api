@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -38,6 +39,21 @@ async def _override_session_broken():  # type: ignore[no-untyped-def]
     yield _mock_session_broken()
 
 
+def _mock_session_timeout() -> AsyncMock:
+    """Return a mock session where SELECT 1 hangs until cancelled."""
+    session = AsyncMock()
+
+    async def _hang(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(60)  # will be cancelled by wait_for timeout
+
+    session.execute = AsyncMock(side_effect=_hang)
+    return session
+
+
+async def _override_session_timeout():  # type: ignore[no-untyped-def]
+    yield _mock_session_timeout()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -56,6 +72,14 @@ def unhealthy_client():
     """Client with a broken (mocked) database."""
     app = create_app()
     app.dependency_overrides[get_session] = _override_session_broken
+    return app
+
+
+@pytest.fixture
+def timeout_client():
+    """Client with a database that times out."""
+    app = create_app()
+    app.dependency_overrides[get_session] = _override_session_timeout
     return app
 
 
@@ -91,7 +115,7 @@ async def test_health_contains_all_required_fields(healthy_client: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_health_links(healthy_client: Any) -> None:
-    """_links contains self and manifest."""
+    """_links contains self, manifest, and status_page per RFC §3.8."""
     transport = ASGITransport(app=healthy_client)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get("/health")
@@ -99,6 +123,7 @@ async def test_health_links(healthy_client: Any) -> None:
     links = resp.json()["_links"]
     assert links["self"] == "/health"
     assert links["manifest"] == "/manifest"
+    assert links["status_page"] == "/status"
 
 
 @pytest.mark.asyncio
@@ -198,10 +223,38 @@ async def test_health_unhealthy_still_has_all_fields(unhealthy_client: Any) -> N
 
 @pytest.mark.asyncio
 async def test_health_no_auth_required(healthy_client: Any) -> None:
-    """Health endpoint works without any auth headers."""
+    """Health endpoint is accessible without auth headers.
+
+    Validates that a request with no Authorization header receives a 200,
+    confirming the endpoint is reachable by unauthenticated clients (e.g.
+    Docker healthchecks, load balancers). Does NOT test the UNPROTECTED_PATHS
+    bypass mechanism in auth middleware — that is covered by auth tests.
+    """
     transport = ASGITransport(app=healthy_client)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get("/health")
 
     # No Authorization header sent — should still succeed
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Tests: database timeout -> 503 degraded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_database_timeout(timeout_client: Any) -> None:
+    """Database timeout returns 503 with degraded status and latency_ms."""
+    transport = ASGITransport(app=timeout_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/health")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["status"] == "degraded"
+    db = body["components"]["database"]
+    assert db["status"] == "degraded"
+    assert db["error"] == "timeout"
+    assert "latency_ms" in db
+    assert isinstance(db["latency_ms"], int)
