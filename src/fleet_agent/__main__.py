@@ -4,14 +4,16 @@ Usage::
 
     python -m fleet_agent
 
-Loads configuration from environment variables, starts the task poller
-and the local health endpoint concurrently.
+Loads configuration from environment variables, self-registers with fleet-api,
+then starts the task poller, heartbeat loop, and local health endpoint
+concurrently.  Handles SIGTERM/SIGINT for graceful shutdown.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 import uvicorn
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -21,7 +23,9 @@ from fleet_agent.config import SidecarConfig
 from fleet_agent.executor import LocalExecutor
 from fleet_agent.health import configure as configure_health
 from fleet_agent.health import get_app
+from fleet_agent.heartbeat import run_heartbeat
 from fleet_agent.poller import TaskPoller
+from fleet_agent.registration import self_register
 from fleet_agent.streamer import EventStreamer
 
 logging.basicConfig(
@@ -44,11 +48,10 @@ def _load_private_key(path: str) -> Ed25519PrivateKey:
 
 async def _run_poller(
     config: SidecarConfig,
+    private_key: Ed25519PrivateKey,
 ) -> None:
     """Set up and run the poller + streamer loop."""
-    private_key = _load_private_key(config.fleet_agent_private_key_path)
-
-    executor = LocalExecutor()
+    executor = LocalExecutor(handler_command=config.fleet_executor_command)
     streamer = EventStreamer(
         fleet_api_url=config.fleet_api_url,
         agent_id=config.fleet_agent_id,
@@ -73,8 +76,10 @@ async def _run_poller(
 
 
 async def _main() -> None:
-    """Start the poller and health server concurrently."""
+    """Self-register, then start the poller, heartbeat, and health server concurrently."""
     config = SidecarConfig()
+    private_key = _load_private_key(config.fleet_agent_private_key_path)
+
     logger.info(
         "Starting fleet agent sidecar: agent=%s api=%s port=%d",
         config.fleet_agent_id,
@@ -82,6 +87,10 @@ async def _main() -> None:
         config.fleet_sidecar_port,
     )
 
+    # 1. Self-register (blocks until successful).
+    await self_register(config, private_key)
+
+    # 2. Concurrent: poller + heartbeat + health.
     health_app = get_app()
     health_config = uvicorn.Config(
         health_app,
@@ -91,10 +100,29 @@ async def _main() -> None:
     )
     health_server = uvicorn.Server(health_config)
 
-    await asyncio.gather(
-        _run_poller(config),
-        health_server.serve(),
+    loop = asyncio.get_running_loop()
+    gather_task: asyncio.Task[None] | None = None
+
+    def _shutdown_handler() -> None:
+        logger.info("Shutting down fleet-agent sidecar")
+        if gather_task is not None:
+            gather_task.cancel()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _shutdown_handler)
+
+    gather_task = asyncio.ensure_future(
+        asyncio.gather(
+            _run_poller(config, private_key),
+            run_heartbeat(config, private_key),
+            health_server.serve(),
+        )
     )
+
+    try:
+        await gather_task
+    except asyncio.CancelledError:
+        logger.info("Fleet-agent sidecar shut down complete")
 
 
 if __name__ == "__main__":
