@@ -58,13 +58,20 @@ class LocalExecutor:
             )
         except FileNotFoundError as exc:
             sequence += 1
+            resolved = shlex.split(self._handler_command)
             yield TaskEvent(
                 event_type="failed",
-                data={"error": f"Handler command not found: {self._handler_command!r} (resolved: {shlex.split(self._handler_command)})"},
+                data={
+                    "error": (
+                        f"Handler command not found: {self._handler_command!r}"
+                        f" (resolved: {resolved})"
+                    )
+                },
                 sequence=sequence,
             )
             raise ExecutionError(
-                f"Handler command not found: {self._handler_command!r} (resolved: {shlex.split(self._handler_command)})"
+                f"Handler command not found: {self._handler_command!r}"
+                f" (resolved: {resolved})"
             ) from exc
 
         # Feed stdin and close it so the handler can start processing.

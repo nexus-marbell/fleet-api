@@ -101,7 +101,7 @@ async def _main() -> None:
     health_server = uvicorn.Server(health_config)
 
     loop = asyncio.get_running_loop()
-    gather_task: asyncio.Task[None] | None = None
+    gather_task: asyncio.Future[tuple[None, None, None]] | None = None
 
     def _shutdown_handler() -> None:
         logger.info("Shutting down fleet-agent sidecar")

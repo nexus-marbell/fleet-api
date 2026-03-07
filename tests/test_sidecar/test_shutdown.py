@@ -40,7 +40,7 @@ class TestGracefulShutdown:
             patch("fleet_agent.__main__.self_register", new_callable=AsyncMock),
             patch("fleet_agent.__main__._run_poller", new_callable=AsyncMock) as mock_poller,
             patch("fleet_agent.__main__.run_heartbeat", new_callable=AsyncMock) as mock_heartbeat,
-            patch("fleet_agent.__main__.get_app") as mock_get_app,
+            patch("fleet_agent.__main__.get_app"),
             patch("fleet_agent.__main__.uvicorn") as mock_uvicorn,
         ):
             # Configure uvicorn mock.
@@ -61,7 +61,6 @@ class TestGracefulShutdown:
             mock_server.serve.side_effect = _block_until_cancelled
 
             loop = asyncio.get_event_loop()
-            original_add = loop.add_signal_handler
 
             def _patched_add(sig: int, handler: object, *args: object) -> None:
                 registered_handlers[sig] = handler
@@ -131,7 +130,7 @@ class TestGracefulShutdown:
 
         with (
             patch("fleet_agent.heartbeat.httpx.AsyncClient") as mock_client_cls,
-            patch("fleet_agent.heartbeat.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("fleet_agent.heartbeat.asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_client = AsyncMock()
             mock_client.post.side_effect = asyncio.CancelledError
