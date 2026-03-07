@@ -72,8 +72,15 @@ def get_workflow_service(
 # ---------------------------------------------------------------------------
 
 
-def _workflow_to_response(workflow: Workflow) -> dict[str, Any]:
-    """Convert a Workflow model to a response dict with _links."""
+def _workflow_to_response(
+    workflow: Workflow, executor_status: str | None = None
+) -> dict[str, Any]:
+    """Convert a Workflow model to a response dict with _links.
+
+    *executor_status* is the owning agent's current status (e.g. ``"active"``,
+    ``"unreachable"``).  It is ``None`` when the owning agent no longer exists
+    in the agents table.
+    """
     return {
         "id": workflow.id,
         "name": workflow.name,
@@ -89,6 +96,7 @@ def _workflow_to_response(workflow: Workflow) -> dict[str, Any]:
             if isinstance(workflow.status, WorkflowStatus)
             else str(workflow.status)
         ),
+        "executor_status": executor_status,
         "created_at": workflow.created_at.isoformat() if workflow.created_at else None,
         "updated_at": workflow.updated_at.isoformat() if workflow.updated_at else None,
         "_links": {
@@ -173,14 +181,14 @@ async def list_workflows(
     """List workflows with filtering and cursor pagination."""
     if agent is None:
         raise RuntimeError("require_auth dependency returned None on a protected route")
-    workflows, next_cursor, has_more, total_count = await service.list_workflows(
+    items, next_cursor, has_more, total_count = await service.list_workflows(
         status=status,
         owner=owner,
         tag=tag,
         limit=limit,
         cursor=cursor,
     )
-    data = [_workflow_to_response(w) for w in workflows]
+    data = [_workflow_to_response(w, executor_status=es) for w, es in items]
     response: dict[str, Any] = {
         "data": data,
         "pagination": {
@@ -207,8 +215,10 @@ async def get_workflow(
     """Get a single workflow by ID."""
     if agent is None:
         raise RuntimeError("require_auth dependency returned None on a protected route")
-    workflow = await service.get_workflow(workflow_id)
-    return _workflow_to_response(workflow)
+    workflow, executor_status = await service.get_workflow(  # type: ignore[misc]
+        workflow_id, include_agent_status=True
+    )
+    return _workflow_to_response(workflow, executor_status=executor_status)
 
 
 @router.put("/{workflow_id}")

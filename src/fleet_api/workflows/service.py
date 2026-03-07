@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fleet_api.agents.models import Agent
 from fleet_api.errors import (
     AuthError,
     ConflictError,
@@ -153,8 +154,34 @@ class WorkflowService:
         await self.session.refresh(workflow)
         return workflow
 
-    async def get_workflow(self, workflow_id: str) -> Workflow:
-        """Get a single workflow by ID. Raises NotFoundError if not found."""
+    async def get_workflow(
+        self, workflow_id: str, *, include_agent_status: bool = False
+    ) -> Workflow | tuple[Workflow, str | None]:
+        """Get a single workflow by ID. Raises NotFoundError if not found.
+
+        When *include_agent_status* is True the return value is a
+        ``(workflow, agent_status_str | None)`` tuple where *agent_status_str*
+        is the owning agent's current status (e.g. ``"active"``, ``"unreachable"``).
+        """
+        if include_agent_status:
+            stmt = (
+                select(Workflow, Agent.status.label("agent_status"))
+                .outerjoin(Agent, Workflow.owner_agent_id == Agent.id)
+                .where(Workflow.id == workflow_id)
+            )
+            row = (await self.session.execute(stmt)).one_or_none()
+            if row is None:
+                raise NotFoundError(
+                    code=ErrorCode.WORKFLOW_NOT_FOUND,
+                    message=f"Workflow '{workflow_id}' not found.",
+                    suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+                    links={"list": {"href": "/workflows"}},
+                )
+            workflow = row[0]
+            agent_status = row[1]
+            status_str = agent_status.value if agent_status is not None else None
+            return workflow, status_str
+
         workflow = await self.session.get(Workflow, workflow_id)
         if workflow is None:
             raise NotFoundError(
@@ -172,12 +199,23 @@ class WorkflowService:
         tag: str | None = None,
         limit: int = 20,
         cursor: str | None = None,
-    ) -> tuple[list[Workflow], str | None, bool, int]:
+    ) -> tuple[list[tuple[Workflow, str | None]], str | None, bool, int]:
         """List workflows with filtering and cursor pagination.
 
-        Returns (workflows, next_cursor, has_more, total_count).
+        Returns ``(items, next_cursor, has_more, total_count)`` where each
+        item is a ``(Workflow, executor_status_str | None)`` tuple.  The
+        *executor_status_str* is the owning agent's current status value
+        (e.g. ``"active"``, ``"unreachable"``), or ``None`` when the owning
+        agent no longer exists.
         """
-        base_stmt = select(Workflow).order_by(Workflow.id)
+        base_stmt = (
+            select(Workflow, Agent.status.label("agent_status"))
+            .outerjoin(Agent, Workflow.owner_agent_id == Agent.id)
+            .order_by(Workflow.id)
+        )
+
+        # Build a parallel filter clause list so we can reuse for count
+        filters = []
 
         # Apply filters
         if status is not None:
@@ -189,20 +227,25 @@ class WorkflowService:
                     message=f"Invalid status filter '{status}'.",
                     suggestion="Use 'active' or 'deprecated'.",
                 )
-            base_stmt = base_stmt.where(Workflow.status == status_enum)
+            filters.append(Workflow.status == status_enum)
         else:
             # Default to active
-            base_stmt = base_stmt.where(Workflow.status == WorkflowStatus.ACTIVE)
+            filters.append(Workflow.status == WorkflowStatus.ACTIVE)
 
         if owner is not None:
-            base_stmt = base_stmt.where(Workflow.owner_agent_id == owner)
+            filters.append(Workflow.owner_agent_id == owner)
 
         if tag is not None:
-            # JSONB contains — check if tags array contains the value
-            base_stmt = base_stmt.where(Workflow.tags.op("@>")(json.dumps([tag])))
+            # JSONB contains -- check if tags array contains the value
+            filters.append(Workflow.tags.op("@>")(json.dumps([tag])))
+
+        for f in filters:
+            base_stmt = base_stmt.where(f)
 
         # Total count (before cursor/limit, after filters)
-        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        count_stmt = select(func.count()).select_from(
+            select(Workflow.id).where(*filters).subquery()
+        )
         total_count = (await self.session.execute(count_stmt)).scalar_one()
 
         # Apply cursor
@@ -214,17 +257,21 @@ class WorkflowService:
         # Fetch limit + 1 to determine has_more
         stmt = stmt.limit(limit + 1)
         result = await self.session.execute(stmt)
-        workflows = list(result.scalars().all())
+        rows = list(result.all())
 
-        has_more = len(workflows) > limit
+        has_more = len(rows) > limit
         if has_more:
-            workflows = workflows[:limit]
+            rows = rows[:limit]
+
+        items: list[tuple[Workflow, str | None]] = [
+            (row[0], row[1].value if row[1] is not None else None) for row in rows
+        ]
 
         next_cursor: str | None = None
-        if has_more and workflows:
-            next_cursor = encode_cursor(workflows[-1].id)
+        if has_more and items:
+            next_cursor = encode_cursor(items[-1][0].id)
 
-        return workflows, next_cursor, has_more, total_count
+        return items, next_cursor, has_more, total_count
 
     async def update_workflow(
         self,
