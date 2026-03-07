@@ -845,7 +845,7 @@ async def resume_task(
     )
     session.add(event)
 
-    # 12. Commit
+    # 11. Commit
     await session.commit()
     await session.refresh(task)
     await session.refresh(event)

@@ -97,7 +97,10 @@ class TaskPauseRequest(BaseModel):
 class TaskResumeRequest(BaseModel):
     """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/resume."""
 
-    priority: str | None = Field(None, description="Priority override: low, normal, high, critical")
+    priority: str | None = Field(
+        None,
+        description="Priority override: low, normal, high, critical",
+    )  # Extends RFC §3.12 with 'critical' to match TaskPriority enum used across all endpoints
 
 
 class TaskEventRequest(BaseModel):
