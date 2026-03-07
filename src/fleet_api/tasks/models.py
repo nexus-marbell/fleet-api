@@ -58,10 +58,10 @@ class Task(Base):
     )
     timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parent_task_id: Mapped[str | None] = mapped_column(
-        String(128), ForeignKey("tasks.id"), nullable=True
+        String(128), ForeignKey("tasks.id"), nullable=True, index=True
     )
     root_task_id: Mapped[str | None] = mapped_column(
-        String(128), ForeignKey("tasks.id"), nullable=True
+        String(128), ForeignKey("tasks.id"), nullable=True, index=True
     )
     retask_depth: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     delegation_depth: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
@@ -84,6 +84,11 @@ class Task(Base):
 
         Validates the transition against the state machine rules.
         If the new status is terminal, sets completed_at.
+
+        Note:
+            Callers are responsible for setting ``started_at`` when
+            transitioning to RUNNING.  This method only manages
+            ``completed_at`` for terminal states.
 
         Raises:
             InvalidStateTransition: If the transition is not allowed.

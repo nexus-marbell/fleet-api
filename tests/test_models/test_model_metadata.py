@@ -149,6 +149,25 @@ class TestTaskModel:
         values = {s.value for s in TaskPriority}
         assert values == {"low", "normal", "high", "critical"}
 
+    def test_required_fields(self) -> None:
+        """Required (non-nullable, no server default) fields must be present."""
+        mapper = sa_inspect(Task)
+        required_cols = {
+            "id",
+            "workflow_id",
+            "principal_agent_id",
+            "input",
+        }
+        for col_name in required_cols:
+            col = mapper.columns[col_name]
+            assert not col.nullable, f"{col_name} should be non-nullable"
+            # Fields with server_default are effectively optional at insert time;
+            # these four have neither nullable=True nor a server_default.
+            if col_name != "id":  # PK handled differently
+                assert col.server_default is None, (
+                    f"{col_name} should have no server default (caller must provide)"
+                )
+
     def test_depth_columns_have_defaults(self) -> None:
         mapper = sa_inspect(Task)
         for col_name in ("retask_depth", "delegation_depth"):

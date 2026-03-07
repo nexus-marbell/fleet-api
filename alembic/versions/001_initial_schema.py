@@ -177,6 +177,8 @@ def upgrade() -> None:
     op.create_index("ix_tasks_status", "tasks", ["status"])
     op.create_index("ix_tasks_principal_agent_id", "tasks", ["principal_agent_id"])
     op.create_index("ix_tasks_executor_agent_id", "tasks", ["executor_agent_id"])
+    op.create_index("ix_tasks_parent_task_id", "tasks", ["parent_task_id"])
+    op.create_index("ix_tasks_root_task_id", "tasks", ["root_task_id"])
     op.create_index("ix_task_events_task_id", "task_events", ["task_id"])
     op.create_index(
         "ix_task_events_task_id_sequence",
@@ -190,6 +192,8 @@ def downgrade() -> None:
     """Drop all tables and enum types."""
     op.drop_index("ix_task_events_task_id_sequence", "task_events")
     op.drop_index("ix_task_events_task_id", "task_events")
+    op.drop_index("ix_tasks_root_task_id", "tasks")
+    op.drop_index("ix_tasks_parent_task_id", "tasks")
     op.drop_index("ix_tasks_executor_agent_id", "tasks")
     op.drop_index("ix_tasks_principal_agent_id", "tasks")
     op.drop_index("ix_tasks_status", "tasks")
