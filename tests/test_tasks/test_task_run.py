@@ -931,7 +931,7 @@ class TestTaskRunIdempotency:
 
 class TestBuildTaskLinks:
     def test_accepted_status_links(self) -> None:
-        """Accepted status has self, stream, pause, cancel, context, workflow."""
+        """Accepted status has self, stream, cancel, workflow (no pause, no context)."""
         from fleet_api.tasks.service import build_task_links
 
         links = build_task_links("task-abc", "wf-test", "accepted")
@@ -944,21 +944,14 @@ class TestBuildTaskLinks:
             == "/workflows/wf-test/tasks/task-abc/stream"
         )
         assert links["workflow"]["href"] == "/workflows/wf-test"
-        assert links["pause"]["method"] == "POST"
-        assert (
-            links["pause"]["href"]
-            == "/workflows/wf-test/tasks/task-abc/pause"
-        )
         assert links["cancel"]["method"] == "POST"
         assert (
             links["cancel"]["href"]
             == "/workflows/wf-test/tasks/task-abc/cancel"
         )
-        assert links["context"]["method"] == "POST"
-        assert (
-            links["context"]["href"]
-            == "/workflows/wf-test/tasks/task-abc/context"
-        )
+        # Per RFC: accepted tasks can only be cancelled, not paused or redirected
+        assert "pause" not in links
+        assert "context" not in links
 
     def test_completed_status_links(self) -> None:
         """Completed status has no action links."""
@@ -981,13 +974,15 @@ class TestBuildTaskLinks:
         assert "cancel" in links
         assert "context" in links
 
-    def test_paused_status_has_context_only(self) -> None:
-        """Paused status has context but not cancel or pause."""
+    def test_paused_status_links(self) -> None:
+        """Paused status has resume, cancel, context, redirect per RFC table."""
         from fleet_api.tasks.service import build_task_links
 
         links = build_task_links("task-abc", "wf-test", "paused")
         assert "context" in links
-        assert "cancel" not in links
+        assert "cancel" in links
+        assert "resume" in links
+        assert "redirect" in links
         assert "pause" not in links
 
 
