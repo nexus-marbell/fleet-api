@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from fleet_agent.executor import LocalExecutor
-from fleet_agent.models import PendingTask, TaskEvent
+from fleet_agent.models import PendingTask
 from fleet_agent.poller import TaskPoller
-from fleet_agent.streamer import EventStreamer
 
 _SAMPLE_TASKS = [
     {
@@ -153,6 +149,79 @@ class TestPoll:
 
         assert len(tasks) == 1
         assert tasks[0].task_id == "t-1"
+
+
+class TestPollerBackoff:
+    """TaskPoller exponential backoff on connection failures."""
+
+    async def test_backoff_increases_on_failure(
+        self, poller: TaskPoller
+    ) -> None:
+        """Consecutive failures double the backoff interval."""
+        from fleet_agent.poller import _BASE_BACKOFF_SECONDS
+
+        assert poller._current_backoff == _BASE_BACKOFF_SECONDS
+
+        with patch("fleet_agent.poller.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = httpx.ConnectError("refused")
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            await poller.poll()
+
+        # After first failure, backoff should double.
+        assert poller._current_backoff == _BASE_BACKOFF_SECONDS * 2
+
+    async def test_backoff_resets_on_success(
+        self, poller: TaskPoller
+    ) -> None:
+        """Successful poll resets backoff to base."""
+        from fleet_agent.poller import _BASE_BACKOFF_SECONDS
+
+        # Simulate elevated backoff from previous failures.
+        poller._current_backoff = 40.0
+
+        mock_response = _ok_response([])
+
+        with patch("fleet_agent.poller.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            await poller.poll()
+
+        assert poller._current_backoff == _BASE_BACKOFF_SECONDS
+
+    async def test_backoff_caps_at_max(
+        self, private_key: Ed25519PrivateKey
+    ) -> None:
+        """Backoff does not exceed _MAX_BACKOFF_SECONDS."""
+        from fleet_agent.poller import _MAX_BACKOFF_SECONDS
+
+        poller = TaskPoller(
+            fleet_api_url="https://fleet.example.com",
+            agent_id="test-agent",
+            private_key=private_key,
+            interval=1,
+            max_concurrent=1,
+        )
+        # Set backoff near max so next doubling would exceed it.
+        poller._current_backoff = 40.0
+
+        with patch("fleet_agent.poller.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = httpx.ConnectError("refused")
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            await poller.poll()
+
+        assert poller._current_backoff == _MAX_BACKOFF_SECONDS
 
 
 class TestPollerConcurrency:
