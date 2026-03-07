@@ -143,7 +143,7 @@ class TestCancelFromTerminalStates:
     """Cancel from completed, failed, or cancelled states returns 409."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled"])
+    @pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled", "retasked", "redirected"])
     async def test_cancel_from_terminal_state(self, terminal_status: str) -> None:
         """POST cancel on a {terminal_status} task returns 409 TASK_NOT_PAUSABLE."""
         app = _create_test_app()
@@ -342,7 +342,8 @@ class TestCancelResponseFormat:
     @pytest.mark.asyncio
     async def test_response_contains_all_rfc_fields(self) -> None:
         """Response contains exact RFC fields: task_id, workflow_id, caller,
-        executor, status, input, result, priority, created_at, completed_at, _links."""
+        executor, status, input, result, priority, created_at, completed_at,
+        cancelled_at, cancelled_by, reason, _links."""
         app = _create_test_app()
         mock_task = _make_cancelled_task()
 
@@ -361,13 +362,100 @@ class TestCancelResponseFormat:
             assert response.status_code == 200
             data = response.json()
 
-            # All RFC fields present
+            # All RFC fields present including cancel-specific fields
             expected_fields = {
                 "task_id", "workflow_id", "caller", "executor",
                 "status", "input", "result", "priority",
-                "created_at", "completed_at", "_links",
+                "created_at", "completed_at",
+                "cancelled_at", "cancelled_by", "reason",
+                "_links",
             }
             assert set(data.keys()) == expected_fields
+
+    @pytest.mark.asyncio
+    async def test_cancelled_at_equals_completed_at(self) -> None:
+        """cancelled_at mirrors completed_at (set by transition_to on terminal states)."""
+        app = _create_test_app()
+        mock_task = _make_cancelled_task()
+
+        with patch(
+            "fleet_api.tasks.routes.cancel_task",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/cancel",
+                    json={},
+                )
+
+            data = response.json()
+            assert data["cancelled_at"] == data["completed_at"]
+            assert data["cancelled_at"] == "2026-03-07T14:35:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_by_is_authenticated_agent(self) -> None:
+        """cancelled_by is the authenticated agent who requested cancellation."""
+        app = _create_test_app(agent_id=AGENT_ID)
+        mock_task = _make_cancelled_task()
+
+        with patch(
+            "fleet_api.tasks.routes.cancel_task",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/cancel",
+                    json={},
+                )
+
+            data = response.json()
+            assert data["cancelled_by"] == AGENT_ID
+
+    @pytest.mark.asyncio
+    async def test_reason_in_response(self) -> None:
+        """reason from the request body appears in the response."""
+        app = _create_test_app()
+        mock_task = _make_cancelled_task()
+
+        with patch(
+            "fleet_api.tasks.routes.cancel_task",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/cancel",
+                    json={"reason": "No longer needed"},
+                )
+
+            data = response.json()
+            assert data["reason"] == "No longer needed"
+
+    @pytest.mark.asyncio
+    async def test_reason_null_when_not_provided(self) -> None:
+        """reason is null when no reason provided in request."""
+        app = _create_test_app()
+        mock_task = _make_cancelled_task()
+
+        with patch(
+            "fleet_api.tasks.routes.cancel_task",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/cancel",
+                    json={},
+                )
+
+            data = response.json()
+            assert data["reason"] is None
 
     @pytest.mark.asyncio
     async def test_caller_is_principal_agent_id(self) -> None:
@@ -575,11 +663,11 @@ class TestOptionalReason:
 
 
 class TestCancelHATEOASLinks:
-    """HATEOAS _links in cancel response — terminal state, no action links."""
+    """HATEOAS _links in cancel response — self, workflow, and rerun."""
 
     @pytest.mark.asyncio
-    async def test_links_contains_self_and_workflow_only(self) -> None:
-        """Cancel response includes only self + workflow links (no action links)."""
+    async def test_links_contains_self_workflow_and_rerun(self) -> None:
+        """Cancel response includes self, workflow, and rerun links."""
         app = _create_test_app()
         mock_task = _make_cancelled_task()
 
@@ -598,12 +686,11 @@ class TestCancelHATEOASLinks:
             data = response.json()
             links = data["_links"]
 
-            # Only self + workflow — no rerun, cancel, pause, etc.
-            assert set(links.keys()) == {"self", "workflow"}
+            assert set(links.keys()) == {"self", "workflow", "rerun"}
 
     @pytest.mark.asyncio
-    async def test_links_use_href_object_format(self) -> None:
-        """Links use {"href": "..."} object format consistent with codebase."""
+    async def test_links_use_correct_format(self) -> None:
+        """Non-action links use {"href": "..."}, action links include {"method": "POST"}."""
         app = _create_test_app()
         mock_task = _make_cancelled_task()
 
@@ -622,12 +709,19 @@ class TestCancelHATEOASLinks:
             data = response.json()
             links = data["_links"]
 
+            # Non-action links: href only
             assert links["self"] == {"href": f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}"}
             assert links["workflow"] == {"href": f"/workflows/{WORKFLOW_ID}"}
 
+            # Action link: includes method per RFC §3.6
+            assert links["rerun"] == {
+                "method": "POST",
+                "href": f"/workflows/{WORKFLOW_ID}/run",
+            }
+
     @pytest.mark.asyncio
-    async def test_no_action_links_on_terminal_state(self) -> None:
-        """Cancelled is terminal — no rerun, pause, resume links should exist."""
+    async def test_no_cancel_pause_resume_links(self) -> None:
+        """Cancelled is terminal — no cancel, pause, resume links should exist."""
         app = _create_test_app()
         mock_task = _make_cancelled_task()
 
@@ -646,8 +740,7 @@ class TestCancelHATEOASLinks:
             data = response.json()
             links = data["_links"]
 
-            # Explicitly assert no action links
-            assert "rerun" not in links
+            # No cancel/pause/resume action links on terminal state
             assert "cancel" not in links
             assert "pause" not in links
             assert "resume" not in links

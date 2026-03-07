@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.database.connection import get_session
+from fleet_api.tasks.models import Task
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
 from fleet_api.tasks.service import (
     TaskService,
@@ -79,7 +80,8 @@ def get_task_service(
 def build_cancel_links(task_id: str, workflow_id: str) -> dict[str, Any]:
     """Build HATEOAS _links for a cancelled task response.
 
-    Cancelled is a terminal state — only self + workflow links, no action links.
+    Cancelled is a terminal state — self, workflow, and rerun.
+    Action links include ``"method": "POST"`` per RFC section 3.6.
     """
     return {
         "self": {"href": f"/workflows/{workflow_id}/tasks/{task_id}"},
@@ -93,12 +95,30 @@ def build_cancel_links(task_id: str, workflow_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _cancel_response(task: Any, cancelled_by: str, reason: str | None) -> dict[str, Any]:
-    """Build the cancel response matching RFC section 3.16 field names."""
+def _cancel_response(
+    task: Task,
+    cancelled_by: str,
+    reason: str | None,
+) -> dict[str, Any]:
+    """Build the cancel response — returns the full updated task per RFC.
+
+    Uses RFC field names: ``caller`` (not principal_agent_id),
+    ``executor`` (not executor_agent_id).
+
+    Includes ``cancelled_at``, ``cancelled_by``, and ``reason`` at top level
+    per Issue #16 spec.
+    """
     return {
         "task_id": task.id,
         "workflow_id": task.workflow_id,
-        "status": "cancelled",
+        "caller": task.principal_agent_id,
+        "executor": task.executor_agent_id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "input": task.input,
+        "result": task.result,
+        "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "cancelled_at": task.completed_at.isoformat() if task.completed_at else None,
         "cancelled_by": cancelled_by,
         "reason": reason,
