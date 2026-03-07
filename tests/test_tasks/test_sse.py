@@ -15,7 +15,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -26,7 +25,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from httpx import ASGITransport, AsyncClient
 
 from fleet_api.app import create_app
-from fleet_api.errors import ErrorCode, NotFoundError
 from fleet_api.middleware.auth import AuthenticatedAgent, get_agent_lookup, require_auth
 from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
 from fleet_api.tasks.sse import format_sse_event
@@ -730,7 +728,7 @@ class TestNewEventTypesPostable:
             "fleet_api.tasks.routes.process_sidecar_event",
             new_callable=AsyncMock,
             return_value=(mock_event, mock_task),
-        ) as mock_process:
+        ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.post(
