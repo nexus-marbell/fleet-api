@@ -145,7 +145,7 @@ async def register_agent(
 @router.post("/{agent_id}/heartbeat")
 async def heartbeat(
     agent_id: str,
-    auth: AuthenticatedAgent | None = Depends(require_auth),
+    auth: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Record a heartbeat for the authenticated agent.
@@ -154,11 +154,11 @@ async def heartbeat(
     On first heartbeat, transitions status from registered to active.
     """
     # Auth guard: agent can only heartbeat for itself
-    if auth is None or auth.agent_id != agent_id:
+    if auth.agent_id != agent_id:
         raise AuthError(
             code=ErrorCode.NOT_AUTHORIZED,
             message=(
-                f"Agent '{auth.agent_id if auth else 'unknown'}' "
+                f"Agent '{auth.agent_id}' "
                 f"cannot send heartbeat for '{agent_id}'"
             ),
             suggestion="You can only send heartbeats for your own agent_id.",
@@ -194,19 +194,13 @@ async def heartbeat(
 @router.get("/{agent_id}")
 async def get_agent(
     agent_id: str,
-    auth: AuthenticatedAgent | None = Depends(require_auth),
+    auth: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Return the public profile of an agent.
 
     Any authenticated agent can view another agent's profile.
     """
-    if auth is None:
-        raise AuthError(
-            code=ErrorCode.INVALID_SIGNATURE,
-            message="Authentication required",
-        )
-
     svc = AgentService(session)
     agent = await svc.get_agent(agent_id)
 
