@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from fleet_api.agents.routes import router as agents_router
 from fleet_api.health import health_router
+from fleet_api.manifest import router as manifest_router
 from fleet_api.middleware.errors import register_error_handlers
 from fleet_api.tasks.routes import router as tasks_router
 from fleet_api.workflows.routes import router as workflows_router
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
 
     app.include_router(health_router)
+    app.include_router(manifest_router, tags=["discovery"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
     app.include_router(workflows_router, prefix="/workflows", tags=["workflows"])
     app.include_router(tasks_router, prefix="/tasks", tags=["tasks"])
