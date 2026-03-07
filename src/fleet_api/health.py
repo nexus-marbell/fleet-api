@@ -71,7 +71,7 @@ async def _check_database(session: AsyncSession) -> dict[str, Any]:
             "latency_ms": latency_ms,
             "last_successful_query": datetime.now(UTC).isoformat(),
         }
-    except asyncio.TimeoutError:
+    except TimeoutError:
         latency_ms = round((time.monotonic() - t0) * 1000)
         logger.error("Database health check timed out after 5s")
         return {
