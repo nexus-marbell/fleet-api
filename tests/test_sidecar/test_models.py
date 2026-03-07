@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fleet_agent.models import PendingTask, TaskEvent
+from fleet_agent.models import HealthStatus, PendingTask, TaskEvent
 
 
 class TestPendingTask:
@@ -47,3 +47,37 @@ class TestTaskEvent:
         """Data field defaults to None."""
         event = TaskEvent(event_type="heartbeat", sequence=1)
         assert event.data is None
+
+
+class TestHealthStatus:
+    """HealthStatus data model."""
+
+    def test_healthy_status(self) -> None:
+        """All fields are populated for a healthy sidecar."""
+        status = HealthStatus(
+            status="healthy",
+            agent_id="agent-1",
+            fleet_api_url="https://fleet.example.com",
+            fleet_api_reachable=True,
+            poller_running=True,
+            active_tasks=2,
+            uptime_seconds=120,
+        )
+        assert status.status == "healthy"
+        assert status.agent_id == "agent-1"
+        assert status.fleet_api_reachable is True
+        assert status.active_tasks == 2
+
+    def test_unhealthy_status(self) -> None:
+        """Unhealthy state when fleet-api is unreachable."""
+        status = HealthStatus(
+            status="unhealthy",
+            agent_id="agent-1",
+            fleet_api_url="https://fleet.example.com",
+            fleet_api_reachable=False,
+            poller_running=True,
+            active_tasks=0,
+            uptime_seconds=60,
+        )
+        assert status.status == "unhealthy"
+        assert status.fleet_api_reachable is False
