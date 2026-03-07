@@ -258,7 +258,7 @@ class WorkflowService:
 
         provided = _provided_fields or set()
 
-        if "name" in provided:
+        if "name" in provided and name is not None:
             workflow.name = name
         if "description" in provided:
             workflow.description = description
