@@ -81,7 +81,7 @@ def _make_new_task(
     workflow_id: str = WORKFLOW_ID,
     parent_task_id: str = TASK_ID,
     root_task_id: str = TASK_ID,
-    retask_depth: int = 1,
+    lineage_depth: int = 1,
     principal_agent_id: str = AGENT_ID,
     executor_agent_id: str = "executor-agent-xyz",
     priority: TaskPriority = TaskPriority.HIGH,
@@ -94,7 +94,7 @@ def _make_new_task(
     task.workflow_id = workflow_id
     task.parent_task_id = parent_task_id
     task.root_task_id = root_task_id
-    task.retask_depth = retask_depth
+    task.lineage_depth = lineage_depth
     task.principal_agent_id = principal_agent_id
     task.executor_agent_id = executor_agent_id
     task.status = TaskStatus.ACCEPTED
@@ -117,7 +117,7 @@ def _make_original_task(
     status: TaskStatus = TaskStatus.COMPLETED,
     task_input: dict[str, Any] | None = None,
     result: dict[str, Any] | None = None,
-    retask_depth: int = 0,
+    lineage_depth: int = 0,
     root_task_id: str | None = None,
     priority: TaskPriority = TaskPriority.NORMAL,
 ) -> MagicMock:
@@ -133,7 +133,7 @@ def _make_original_task(
     task.priority = priority
     task.created_at = CREATED_AT
     task.completed_at = COMPLETED_AT
-    task.retask_depth = retask_depth
+    task.lineage_depth = lineage_depth
     task.root_task_id = root_task_id
     task.parent_task_id = None
     task.timeout_seconds = 300
@@ -477,7 +477,7 @@ class TestRetaskDepthLimit:
 
     @pytest.mark.asyncio
     async def test_depth_limit_exceeded(self) -> None:
-        """POST retask when retask_depth >= max returns 422."""
+        """POST retask when lineage_depth >= max returns 422."""
         app = _create_test_app()
 
         with patch(
@@ -520,7 +520,7 @@ class TestRetaskLineage:
     async def test_lineage_depth_and_root(self) -> None:
         """Response contains lineage with correct depth and root_task_id."""
         app = _create_test_app()
-        new_task = _make_new_task(retask_depth=1, root_task_id=TASK_ID)
+        new_task = _make_new_task(lineage_depth=1, root_task_id=TASK_ID)
         original_task = _make_original_task()
 
         with (
@@ -560,13 +560,13 @@ class TestRetaskLineage:
         root_id = "task-root0000"
         parent_id = TASK_ID
         new_task = _make_new_task(
-            retask_depth=2,
+            lineage_depth=2,
             root_task_id=root_id,
             parent_task_id=parent_id,
         )
         original_task = _make_original_task(
             root_task_id=root_id,
-            retask_depth=1,
+            lineage_depth=1,
         )
 
         with (
@@ -714,7 +714,7 @@ class TestRetaskEventCreation:
         mock_task.input = {"code": "main.py"}
         mock_task.result = {"review": "LGTM"}
         mock_task.priority = TaskPriority.NORMAL
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300
@@ -1271,7 +1271,7 @@ class TestRetaskServiceUnit:
         mock_task.input = {"code": "main.py"}
         mock_task.result = {"review": "LGTM"}
         mock_task.priority = TaskPriority.NORMAL
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300
@@ -1300,7 +1300,7 @@ class TestRetaskServiceUnit:
         new_task_call = session.add.call_args_list[0][0][0]
         assert new_task_call.parent_task_id == TASK_ID
         assert new_task_call.root_task_id == TASK_ID  # first in chain
-        assert new_task_call.retask_depth == 1
+        assert new_task_call.lineage_depth == 1
         assert new_task_call.status == TaskStatus.ACCEPTED
         assert new_task_call.principal_agent_id == AGENT_ID
         assert new_task_call.executor_agent_id == "executor-agent-xyz"
@@ -1324,7 +1324,7 @@ class TestRetaskServiceUnit:
         mock_task.input = {"code": "main.py"}
         mock_task.result = None
         mock_task.priority = TaskPriority.HIGH
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300
@@ -1373,7 +1373,7 @@ class TestBuildLineageChain:
         current_task = MagicMock(spec=Task)
         current_task.id = NEW_TASK_ID
         current_task.parent_task_id = TASK_ID
-        current_task.retask_depth = 1
+        current_task.lineage_depth = 1
 
         # Parent task (depth 0)
         parent_task = MagicMock(spec=Task)
@@ -1395,7 +1395,7 @@ class TestBuildLineageChain:
         task = MagicMock(spec=Task)
         task.id = TASK_ID
         task.parent_task_id = None
-        task.retask_depth = 0
+        task.lineage_depth = 0
 
         chain = await build_lineage_chain(session, task)
         assert chain == [TASK_ID]

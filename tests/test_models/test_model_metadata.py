@@ -170,7 +170,7 @@ class TestTaskModel:
 
     def test_depth_columns_have_defaults(self) -> None:
         mapper = sa_inspect(Task)
-        for col_name in ("retask_depth", "delegation_depth"):
+        for col_name in ("lineage_depth", "delegation_depth"):
             col = mapper.columns[col_name]
             assert col.server_default is not None
 

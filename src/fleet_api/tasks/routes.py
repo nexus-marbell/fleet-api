@@ -30,6 +30,7 @@ from fleet_api.tasks.service import (
     count_context_injections,
     pause_task,
     process_sidecar_event,
+    redirect_task,
     resume_task,
     retask_task,
     task_to_detail_response,
@@ -101,6 +102,20 @@ class TaskResumeRequest(BaseModel):
         None,
         description="Priority override: low, normal, high, critical",
     )  # Extends RFC §3.12 with 'critical' to match TaskPriority enum used across all endpoints
+
+
+class TaskRedirectRequest(BaseModel):
+    """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/redirect."""
+
+    reason: str = Field(..., description="Why the redirect is needed")
+    new_input: dict[str, Any] = Field(..., description="Input for the new task (replaces original)")
+    inherit_progress: bool = Field(
+        False, description="Whether new task inherits progress metadata"
+    )
+    priority: str | None = Field(
+        None,
+        description="Priority for new task. If omitted, inherits from original.",
+    )
 
 
 class TaskEventRequest(BaseModel):
@@ -383,7 +398,7 @@ async def retask_task_endpoint(
         "priority": priority_value,
         "created_at": new_task.created_at.isoformat() if new_task.created_at else None,
         "lineage": {
-            "depth": new_task.retask_depth,
+            "depth": new_task.lineage_depth,
             "root_task_id": new_task.root_task_id,
             "chain": chain,
         },
@@ -398,6 +413,79 @@ async def retask_task_endpoint(
     # Add parent link
     # RFC §3.14 shows bare string; using HATEOAS object form per Agentic API Standard §2
     response_data["_links"]["parent"] = {
+        "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
+    }
+
+    return JSONResponse(status_code=201, content=response_data)
+
+
+# ---------------------------------------------------------------------------
+# POST /workflows/{workflow_id}/tasks/{task_id}/redirect — Phase 2 Unit 6
+# ---------------------------------------------------------------------------
+
+
+@router.post("/workflows/{workflow_id}/tasks/{task_id}/redirect", status_code=201)
+async def redirect_task_endpoint(
+    workflow_id: str,
+    task_id: str,
+    body: TaskRedirectRequest,
+    agent: AuthenticatedAgent = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """Redirect a running or paused task with new input.
+
+    Transitions the original task to REDIRECTED and creates a new task
+    with the provided new_input. Returns 201 Created with the new task
+    and lineage information.
+    """
+    # TODO(Phase 2 Wave 3): Idempotency-Key support deferred — see Issue #44
+
+    new_task, original_task = await redirect_task(
+        session=session,
+        workflow_id=workflow_id,
+        task_id=task_id,
+        caller_agent_id=agent.agent_id,
+        reason=body.reason,
+        new_input=body.new_input,
+        inherit_progress=body.inherit_progress,
+        priority=body.priority,
+    )
+
+    # Build lineage chain
+    chain = await build_lineage_chain(session, new_task)
+
+    # Build response per RFC §3.15
+    status_value = (
+        new_task.status.value
+        if hasattr(new_task.status, "value")
+        else str(new_task.status)
+    )
+    priority_value = (
+        new_task.priority.value
+        if hasattr(new_task.priority, "value")
+        else str(new_task.priority)
+    )
+
+    response_data: dict[str, Any] = {
+        "task_id": new_task.id,
+        "workflow_id": new_task.workflow_id,
+        "status": status_value,
+        "redirected_from": original_task.id,
+        "lineage": {
+            "depth": new_task.lineage_depth,
+            "root_task_id": new_task.root_task_id,
+            "chain": chain,
+        },
+        "caller": new_task.principal_agent_id,
+        "executor": new_task.executor_agent_id,
+        "priority": priority_value,
+        "created_at": new_task.created_at.isoformat() if new_task.created_at else None,
+        "_links": build_task_links(new_task.id, workflow_id, status_value),
+    }
+
+    # Add redirected_from link per RFC §3.15
+    # RFC §3.15 shows bare string links; using HATEOAS object form per Agentic API Standard §2
+    response_data["_links"]["redirected_from"] = {
         "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
     }
 
