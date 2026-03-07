@@ -416,17 +416,10 @@ async def retask_task(
         )
 
     # 6. Transition original task to RETASKED
+    #    Status is already validated as COMPLETED or FAILED (step 4), and
+    #    both have RETASKED as a valid transition, so this cannot fail.
     old_status = task.status
-    try:
-        task.transition_to(TaskStatus.RETASKED)
-    except InvalidStateTransition:
-        raise StateError(
-            code=ErrorCode.INVALID_STATE_TRANSITION,
-            message=(
-                f"Cannot transition task '{task_id}' from "
-                f"'{task.status.value}' to 'retasked'."
-            ),
-        )
+    task.transition_to(TaskStatus.RETASKED)
 
     # 7. Determine lineage
     root_task_id = task.root_task_id or task.id

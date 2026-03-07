@@ -324,6 +324,7 @@ async def retask_task_endpoint(
     Creates a new task linked to the original with lineage tracking.
     Returns 201 Created with the new task and lineage information.
     """
+    # TODO(Phase 2 Wave 3): Idempotency-Key support deferred — see Issue #44
     refinement_dict = body.refinement.model_dump(exclude_none=True)
 
     new_task, original_task = await retask_task(
@@ -353,7 +354,7 @@ async def retask_task_endpoint(
         else str(new_task.priority)
     )
 
-    response_data = {
+    response_data: dict[str, Any] = {
         "task_id": new_task.id,
         "parent_task_id": new_task.parent_task_id,
         "workflow_id": new_task.workflow_id,
@@ -376,6 +377,7 @@ async def retask_task_endpoint(
     }
 
     # Add parent link
+    # RFC §3.14 shows bare string; using HATEOAS object form per Agentic API Standard §2
     response_data["_links"]["parent"] = {
         "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
     }
