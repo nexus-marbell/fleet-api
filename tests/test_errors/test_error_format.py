@@ -65,6 +65,7 @@ class TestErrorCodeStatusMapping:
             ErrorCode.TIMESTAMP_EXPIRED: 401,
             ErrorCode.NOT_AUTHORIZED: 403,
             ErrorCode.WORKFLOW_EXISTS: 409,
+            ErrorCode.AGENT_EXISTS: 409,
             ErrorCode.INVALID_INPUT: 422,
             ErrorCode.IDEMPOTENCY_MISMATCH: 422,
             ErrorCode.RATE_LIMITED: 429,
@@ -94,8 +95,8 @@ class TestErrorCodeStatusMapping:
             assert code in ERROR_STATUS_CODES, (
                 f"{code} missing from ERROR_STATUS_CODES"
             )
-        assert len(ErrorCode) == 24, (
-            f"Expected 24 error codes, got {len(ErrorCode)}"
+        assert len(ErrorCode) == 25, (
+            f"Expected 25 error codes, got {len(ErrorCode)}"
         )
 
     def test_custom_http_status_override(self) -> None:

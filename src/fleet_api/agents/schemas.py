@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from datetime import datetime
 
@@ -45,8 +46,6 @@ class RegisterAgentRequest(BaseModel):
     @field_validator("public_key")
     @classmethod
     def validate_public_key(cls, v: str) -> str:
-        import base64
-
         if not v or not v.strip():
             raise ValueError("public_key must not be empty")
         try:
@@ -93,7 +92,6 @@ class AgentResponse(BaseModel):
     status: str
     registered_at: datetime
     last_heartbeat: datetime | None = None
-    _links: dict[str, LinkObject] = {}
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -108,17 +106,15 @@ class RegisterAgentResponse(BaseModel):
     status: str
     registered_at: datetime
     onboarding: list[OnboardingStep] = []
-    _links: dict[str, LinkObject] = {}
 
     model_config = ConfigDict(populate_by_name=True)
 
 
 class HeartbeatResponse(BaseModel):
-    """PUT /agents/{agent_id}/heartbeat response body."""
+    """POST /agents/{agent_id}/heartbeat response body."""
 
     agent_id: str
     status: str
     last_heartbeat: datetime
-    _links: dict[str, LinkObject] = {}
 
     model_config = ConfigDict(populate_by_name=True)

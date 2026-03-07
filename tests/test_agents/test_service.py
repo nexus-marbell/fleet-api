@@ -2,44 +2,14 @@
 
 from __future__ import annotations
 
-import base64
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from fleet_api.agents.models import AgentStatus
 from fleet_api.agents.service import AgentService, DatabaseAgentLookup
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _generate_keypair() -> tuple[Ed25519PrivateKey, str]:
-    private_key = Ed25519PrivateKey.generate()
-    raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    return private_key, base64.b64encode(raw_pub).decode()
-
-
-def _fake_agent_obj(
-    agent_id: str = "test-agent",
-    public_key_b64: str = "",
-    status: AgentStatus = AgentStatus.REGISTERED,
-    last_heartbeat: datetime | None = None,
-) -> MagicMock:
-    agent = MagicMock()
-    agent.id = agent_id
-    agent.display_name = None
-    agent.public_key = public_key_b64
-    agent.capabilities = None
-    agent.status = status
-    agent.registered_at = datetime(2026, 1, 1, tzinfo=UTC)
-    agent.last_heartbeat = last_heartbeat
-    agent.metadata_ = None
-    return agent
+from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +22,7 @@ class TestAgentService:
     async def test_get_agent_found(self) -> None:
         """get_agent returns the agent when found."""
         session = AsyncMock()
-        agent = _fake_agent_obj()
+        agent = make_fake_agent()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = agent
         session.execute = AsyncMock(return_value=mock_result)
@@ -109,7 +79,7 @@ class TestAgentService:
     async def test_heartbeat_activates_registered_agent(self) -> None:
         """heartbeat transitions REGISTERED to ACTIVE on first call."""
         session = AsyncMock()
-        agent = _fake_agent_obj(status=AgentStatus.REGISTERED)
+        agent = make_fake_agent(status=AgentStatus.REGISTERED)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = agent
         session.execute = AsyncMock(return_value=mock_result)
@@ -127,7 +97,7 @@ class TestAgentService:
     async def test_heartbeat_preserves_active_status(self) -> None:
         """heartbeat does not change status if already ACTIVE."""
         session = AsyncMock()
-        agent = _fake_agent_obj(status=AgentStatus.ACTIVE)
+        agent = make_fake_agent(status=AgentStatus.ACTIVE)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = agent
         session.execute = AsyncMock(return_value=mock_result)
@@ -169,7 +139,7 @@ class TestDatabaseAgentLookup:
     @pytest.mark.asyncio
     async def test_get_public_key_found(self) -> None:
         """Returns Ed25519PublicKey when agent exists."""
-        _, pub_b64 = _generate_keypair()
+        _, pub_b64 = generate_keypair()
 
         session = AsyncMock()
         mock_result = MagicMock()

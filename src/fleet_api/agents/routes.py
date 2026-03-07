@@ -36,7 +36,7 @@ def _agent_links(agent_id: str) -> dict[str, Any]:
             exclude_none=True
         ),
         "heartbeat": LinkObject(
-            href=f"/agents/{agent_id}/heartbeat", method="PUT"
+            href=f"/agents/{agent_id}/heartbeat", method="POST"
         ).model_dump(exclude_none=True),
         "workflows": LinkObject(href="/workflows", method="GET").model_dump(
             exclude_none=True
@@ -51,7 +51,7 @@ def _onboarding_steps(agent_id: str) -> list[OnboardingStep]:
             step=1,
             action="Send your first heartbeat to activate the agent",
             endpoint=f"/agents/{agent_id}/heartbeat",
-            hint="PUT with a signed request to transition from registered to active",
+            hint="POST with a signed request to transition from registered to active",
         ),
         OnboardingStep(
             step=2,
@@ -79,6 +79,7 @@ def _build_register_response(agent: Any) -> dict[str, Any]:
         registered_at=agent.registered_at,
         onboarding=_onboarding_steps(agent.id),
     )
+    # _links injected post-model_dump (Pydantic v2 excludes _-prefixed attrs)
     result = resp.model_dump(mode="json")
     result["_links"] = _agent_links(agent.id)
     return result
@@ -102,7 +103,7 @@ async def register_agent(
 
     Idempotent: re-registering with the same agent_id + public_key returns
     200 with the existing record.  Different public_key for the same
-    agent_id returns 409 WORKFLOW_EXISTS (closest RFC error code).
+    agent_id returns 409 AGENT_EXISTS.
     """
     svc = AgentService(session)
     existing = await svc.get_agent(body.agent_id)
@@ -116,7 +117,7 @@ async def register_agent(
             )
         # Conflict — different public key
         raise ConflictError(
-            code=ErrorCode.WORKFLOW_EXISTS,
+            code=ErrorCode.AGENT_EXISTS,
             message=(
                 f"Agent '{body.agent_id}' is already registered with a different public key. "
                 "Re-registration requires the same public key."
@@ -137,11 +138,11 @@ async def register_agent(
 
 
 # ---------------------------------------------------------------------------
-# PUT /agents/{agent_id}/heartbeat (AUTHENTICATED)
+# POST /agents/{agent_id}/heartbeat (AUTHENTICATED) — RFC §4.3
 # ---------------------------------------------------------------------------
 
 
-@router.put("/{agent_id}/heartbeat")
+@router.post("/{agent_id}/heartbeat")
 async def heartbeat(
     agent_id: str,
     auth: AuthenticatedAgent | None = Depends(require_auth),
@@ -179,6 +180,7 @@ async def heartbeat(
         status=agent.status.value if hasattr(agent.status, "value") else str(agent.status),
         last_heartbeat=agent.last_heartbeat,
     )
+    # _links injected post-model_dump (Pydantic v2 excludes _-prefixed attrs)
     result = resp.model_dump(mode="json")
     result["_links"] = _agent_links(agent.id)
     return result
@@ -225,6 +227,7 @@ async def get_agent(
         registered_at=agent.registered_at,
         last_heartbeat=agent.last_heartbeat,
     )
+    # _links injected post-model_dump (Pydantic v2 excludes _-prefixed attrs)
     result = resp.model_dump(mode="json")
     result["_links"] = _agent_links(agent.id)
     return result

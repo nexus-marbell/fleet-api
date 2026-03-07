@@ -1,8 +1,7 @@
-"""Tests for PUT /agents/{agent_id}/heartbeat endpoint."""
+"""Tests for POST /agents/{agent_id}/heartbeat endpoint."""
 
 from __future__ import annotations
 
-import base64
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +11,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from httpx import ASGITransport, AsyncClient
 
 from fleet_api.agents.models import AgentStatus
@@ -20,35 +18,7 @@ from fleet_api.app import create_app
 from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import get_agent_lookup
 from tests.auth_helpers import sign_request
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _generate_keypair() -> tuple[Ed25519PrivateKey, str]:
-    """Generate keypair, return (private_key, base64_raw_public)."""
-    private_key = Ed25519PrivateKey.generate()
-    raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    return private_key, base64.b64encode(raw_pub).decode()
-
-
-def _fake_agent(
-    agent_id: str = "test-agent",
-    public_key_b64: str = "",
-    status: AgentStatus = AgentStatus.REGISTERED,
-    last_heartbeat: datetime | None = None,
-) -> MagicMock:
-    agent = MagicMock()
-    agent.id = agent_id
-    agent.display_name = None
-    agent.public_key = public_key_b64
-    agent.capabilities = None
-    agent.status = status
-    agent.registered_at = datetime(2026, 1, 1, tzinfo=UTC)
-    agent.last_heartbeat = last_heartbeat
-    agent.metadata_ = None
-    return agent
+from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +65,7 @@ def mock_lookup() -> HeartbeatMockLookup:
 @pytest.fixture
 def keypair_and_id(mock_lookup: HeartbeatMockLookup) -> tuple[Ed25519PrivateKey, str, str]:
     """Register a test agent, return (private_key, agent_id, pub_b64)."""
-    private_key, pub_b64 = _generate_keypair()
+    private_key, pub_b64 = generate_keypair()
     agent_id = "heartbeat-agent"
     mock_lookup.register(agent_id, private_key.public_key())
     return private_key, agent_id, pub_b64
@@ -133,7 +103,7 @@ class TestHeartbeatHappyPath:
         private_key, agent_id, pub_b64 = keypair_and_id
         now = datetime.now(UTC)
 
-        agent = _fake_agent(
+        agent = make_fake_agent(
             agent_id=agent_id, public_key_b64=pub_b64, status=AgentStatus.ACTIVE
         )
         agent.last_heartbeat = now
@@ -144,8 +114,8 @@ class TestHeartbeatHappyPath:
         mock_session.execute = AsyncMock(return_value=mock_result)
 
         path = f"/agents/{agent_id}/heartbeat"
-        headers = sign_request("PUT", path, None, private_key, agent_id)
-        response = await client.put(path, headers=headers)
+        headers = sign_request("POST", path, None, private_key, agent_id)
+        response = await client.post(path, headers=headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -163,7 +133,7 @@ class TestHeartbeatHappyPath:
         """First heartbeat transitions status from registered to active."""
         private_key, agent_id, pub_b64 = keypair_and_id
 
-        agent = _fake_agent(
+        agent = make_fake_agent(
             agent_id=agent_id, public_key_b64=pub_b64, status=AgentStatus.REGISTERED
         )
 
@@ -178,8 +148,8 @@ class TestHeartbeatHappyPath:
         mock_session.refresh = AsyncMock(side_effect=fake_refresh)
 
         path = f"/agents/{agent_id}/heartbeat"
-        headers = sign_request("PUT", path, None, private_key, agent_id)
-        response = await client.put(path, headers=headers)
+        headers = sign_request("POST", path, None, private_key, agent_id)
+        response = await client.post(path, headers=headers)
 
         assert response.status_code == 200
         # The service mutates the agent directly
@@ -196,7 +166,7 @@ class TestHeartbeatHappyPath:
         private_key, agent_id, pub_b64 = keypair_and_id
         now = datetime.now(UTC)
 
-        agent = _fake_agent(
+        agent = make_fake_agent(
             agent_id=agent_id, public_key_b64=pub_b64, status=AgentStatus.ACTIVE
         )
         agent.last_heartbeat = now
@@ -206,8 +176,8 @@ class TestHeartbeatHappyPath:
         mock_session.execute = AsyncMock(return_value=mock_result)
 
         path = f"/agents/{agent_id}/heartbeat"
-        headers = sign_request("PUT", path, None, private_key, agent_id)
-        response = await client.put(path, headers=headers)
+        headers = sign_request("POST", path, None, private_key, agent_id)
+        response = await client.post(path, headers=headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -226,7 +196,7 @@ class TestHeartbeatAuth:
         self, client: AsyncClient
     ) -> None:
         """Heartbeat without auth returns 401."""
-        response = await client.put("/agents/some-agent/heartbeat")
+        response = await client.post("/agents/some-agent/heartbeat")
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -238,13 +208,13 @@ class TestHeartbeatAuth:
     ) -> None:
         """Agent A cannot heartbeat for Agent B — returns 403."""
         # Register agent-a
-        private_key_a, _ = _generate_keypair()
+        private_key_a, _ = generate_keypair()
         mock_lookup.register("agent-a", private_key_a.public_key())
 
         # Sign as agent-a but heartbeat for agent-b
         path = "/agents/agent-b/heartbeat"
-        headers = sign_request("PUT", path, None, private_key_a, "agent-a")
-        response = await client.put(path, headers=headers)
+        headers = sign_request("POST", path, None, private_key_a, "agent-a")
+        response = await client.post(path, headers=headers)
 
         assert response.status_code == 403
         data = response.json()
@@ -273,8 +243,8 @@ class TestHeartbeatNotFound:
         mock_session.execute = AsyncMock(return_value=mock_result)
 
         path = f"/agents/{agent_id}/heartbeat"
-        headers = sign_request("PUT", path, None, private_key, agent_id)
-        response = await client.put(path, headers=headers)
+        headers = sign_request("POST", path, None, private_key, agent_id)
+        response = await client.post(path, headers=headers)
 
         assert response.status_code == 404
         data = response.json()

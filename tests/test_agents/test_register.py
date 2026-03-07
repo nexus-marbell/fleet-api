@@ -8,48 +8,14 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from httpx import ASGITransport, AsyncClient
 
 from fleet_api.agents.models import AgentStatus
 from fleet_api.app import create_app
 from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import get_agent_lookup
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_public_key_b64() -> tuple[Ed25519PrivateKey, str]:
-    """Generate a keypair and return (private_key, base64_raw_public_key)."""
-    private_key = Ed25519PrivateKey.generate()
-    raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    return private_key, base64.b64encode(raw_pub).decode()
-
-
-def _fake_agent(
-    agent_id: str = "test-agent",
-    public_key: str = "",
-    display_name: str | None = None,
-    capabilities: list[str] | None = None,
-    status: AgentStatus = AgentStatus.REGISTERED,
-) -> MagicMock:
-    """Create a mock Agent ORM object."""
-    agent = MagicMock()
-    agent.id = agent_id
-    agent.display_name = display_name
-    agent.public_key = public_key
-    agent.capabilities = capabilities
-    agent.status = status
-    agent.registered_at = datetime(2026, 1, 1, tzinfo=UTC)
-    agent.last_heartbeat = None
-    agent.metadata_ = None
-    return agent
+from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +70,7 @@ class TestRegisterNewAgent:
         self, client: AsyncClient, mock_session: AsyncMock
     ) -> None:
         """New agent registration returns 201 with agent details."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
 
         # Mock: no existing agent
         mock_result = MagicMock()
@@ -140,7 +106,7 @@ class TestRegisterNewAgent:
         self, client: AsyncClient, mock_session: AsyncMock
     ) -> None:
         """Registration response includes Pattern 13 onboarding steps."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
@@ -168,7 +134,7 @@ class TestRegisterNewAgent:
         self, client: AsyncClient, mock_session: AsyncMock
     ) -> None:
         """Registration response includes HATEOAS _links."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
@@ -203,8 +169,8 @@ class TestIdempotentReRegistration:
         self, client: AsyncClient, mock_session: AsyncMock
     ) -> None:
         """Re-registering with the same public key returns 200."""
-        _, pub_b64 = _make_public_key_b64()
-        existing = _fake_agent(agent_id="idem-agent", public_key=pub_b64)
+        _, pub_b64 = generate_keypair()
+        existing = make_fake_agent(agent_id="idem-agent", public_key_b64=pub_b64)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = existing
@@ -229,11 +195,11 @@ class TestRegistrationConflict:
     async def test_different_key_returns_409(
         self, client: AsyncClient, mock_session: AsyncMock
     ) -> None:
-        """Different public key for same agent_id returns 409 WORKFLOW_EXISTS."""
-        _, original_b64 = _make_public_key_b64()
-        _, different_b64 = _make_public_key_b64()
+        """Different public key for same agent_id returns 409 AGENT_EXISTS."""
+        _, original_b64 = generate_keypair()
+        _, different_b64 = generate_keypair()
 
-        existing = _fake_agent(agent_id="conflict-agent", public_key=original_b64)
+        existing = make_fake_agent(agent_id="conflict-agent", public_key_b64=original_b64)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = existing
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -243,7 +209,7 @@ class TestRegistrationConflict:
 
         assert response.status_code == 409
         data = response.json()
-        assert data["code"] == "WORKFLOW_EXISTS"
+        assert data["code"] == "AGENT_EXISTS"
         assert "different public key" in data["message"]
 
 
@@ -256,7 +222,7 @@ class TestRegistrationValidation:
     @pytest.mark.asyncio
     async def test_empty_agent_id(self, client: AsyncClient) -> None:
         """Empty agent_id returns 422."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
         body = {"agent_id": "", "public_key": pub_b64}
         response = await client.post("/agents/register", json=body)
         assert response.status_code == 422
@@ -264,7 +230,7 @@ class TestRegistrationValidation:
     @pytest.mark.asyncio
     async def test_agent_id_too_long(self, client: AsyncClient) -> None:
         """agent_id over 128 chars returns 422."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
         body = {"agent_id": "a" * 129, "public_key": pub_b64}
         response = await client.post("/agents/register", json=body)
         assert response.status_code == 422
@@ -272,7 +238,7 @@ class TestRegistrationValidation:
     @pytest.mark.asyncio
     async def test_agent_id_invalid_characters(self, client: AsyncClient) -> None:
         """agent_id with special characters returns 422."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
         body = {"agent_id": "agent@bad!", "public_key": pub_b64}
         response = await client.post("/agents/register", json=body)
         assert response.status_code == 422
@@ -280,7 +246,7 @@ class TestRegistrationValidation:
     @pytest.mark.asyncio
     async def test_agent_id_starts_with_hyphen(self, client: AsyncClient) -> None:
         """agent_id starting with hyphen returns 422."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
         body = {"agent_id": "-bad-start", "public_key": pub_b64}
         response = await client.post("/agents/register", json=body)
         assert response.status_code == 422
@@ -303,7 +269,7 @@ class TestRegistrationValidation:
     @pytest.mark.asyncio
     async def test_missing_agent_id(self, client: AsyncClient) -> None:
         """Missing agent_id field returns 422."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
         body = {"public_key": pub_b64}
         response = await client.post("/agents/register", json=body)
         assert response.status_code == 422
@@ -318,7 +284,7 @@ class TestRegistrationValidation:
     @pytest.mark.asyncio
     async def test_register_requires_no_auth(self, client: AsyncClient) -> None:
         """POST /agents/register does not require authentication."""
-        _, pub_b64 = _make_public_key_b64()
+        _, pub_b64 = generate_keypair()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
 

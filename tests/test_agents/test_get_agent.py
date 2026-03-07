@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +11,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from httpx import ASGITransport, AsyncClient
 
 from fleet_api.agents.models import AgentStatus
@@ -20,36 +18,7 @@ from fleet_api.app import create_app
 from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import get_agent_lookup
 from tests.auth_helpers import sign_request
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _generate_keypair() -> tuple[Ed25519PrivateKey, str]:
-    private_key = Ed25519PrivateKey.generate()
-    raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    return private_key, base64.b64encode(raw_pub).decode()
-
-
-def _fake_agent(
-    agent_id: str = "test-agent",
-    public_key_b64: str = "",
-    display_name: str | None = "Test Agent",
-    capabilities: list[str] | None = None,
-    status: AgentStatus = AgentStatus.ACTIVE,
-    last_heartbeat: datetime | None = None,
-) -> MagicMock:
-    agent = MagicMock()
-    agent.id = agent_id
-    agent.display_name = display_name
-    agent.public_key = public_key_b64
-    agent.capabilities = capabilities or ["execute"]
-    agent.status = status
-    agent.registered_at = datetime(2026, 1, 1, tzinfo=UTC)
-    agent.last_heartbeat = last_heartbeat
-    agent.metadata_ = None
-    return agent
+from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +64,7 @@ def mock_lookup() -> GetAgentMockLookup:
 @pytest.fixture
 def keypair_and_id(mock_lookup: GetAgentMockLookup) -> tuple[Ed25519PrivateKey, str, str]:
     """Register a test agent for auth, return (private_key, agent_id, pub_b64)."""
-    private_key, pub_b64 = _generate_keypair()
+    private_key, pub_b64 = generate_keypair()
     agent_id = "viewer-agent"
     mock_lookup.register(agent_id, private_key.public_key())
     return private_key, agent_id, pub_b64
@@ -132,7 +101,7 @@ class TestGetAgentHappyPath:
         """Authenticated request for existing agent returns 200."""
         private_key, viewer_id, pub_b64 = keypair_and_id
 
-        target = _fake_agent(
+        target = make_fake_agent(
             agent_id="target-agent",
             public_key_b64=pub_b64,
             display_name="Target Agent",
@@ -168,7 +137,7 @@ class TestGetAgentHappyPath:
         """Any authenticated agent can view another agent's profile."""
         private_key, viewer_id, pub_b64 = keypair_and_id
 
-        other_agent = _fake_agent(
+        other_agent = make_fake_agent(
             agent_id="other-agent",
             public_key_b64="other-key-b64",
         )
@@ -195,7 +164,7 @@ class TestGetAgentHappyPath:
         """Agent response includes HATEOAS _links."""
         private_key, viewer_id, pub_b64 = keypair_and_id
 
-        agent = _fake_agent(agent_id="linked-agent", public_key_b64=pub_b64)
+        agent = make_fake_agent(agent_id="linked-agent", public_key_b64=pub_b64)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = agent
         mock_session.execute = AsyncMock(return_value=mock_result)
