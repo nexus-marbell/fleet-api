@@ -172,6 +172,7 @@ async def run_task(
         timeout_seconds=body.timeout_seconds,
         idempotency_key=effective_idempotency_key,
         metadata=body.metadata,
+        callback_url=body.callback_url,
     )
 
     response_data = service.build_task_response(
