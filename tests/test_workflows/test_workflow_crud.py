@@ -137,7 +137,7 @@ class TestCreateWorkflow:
         data = response.json()
         assert data["id"] == "wf-test"
         assert data["name"] == "Test Workflow"
-        assert data["owner_agent_id"] == AGENT_ID
+        assert data["owner"] == AGENT_ID
         assert data["status"] == "active"
         assert "_links" in data
         assert data["_links"]["self"]["href"] == "/workflows/wf-test"
@@ -357,7 +357,7 @@ class TestGetWorkflow:
         assert data["id"] == "wf-test"
         assert data["name"] == "Test Workflow"
         assert data["_links"]["self"]["href"] == "/workflows/wf-test"
-        assert data["_links"]["tasks"]["href"] == "/tasks?workflow_id=wf-test"
+        assert data["_links"]["tasks"]["href"] == "/workflows/wf-test/tasks"
         assert data["_links"]["run"]["href"] == "/workflows/wf-test/run"
         assert data["_links"]["run"]["method"] == "POST"
 

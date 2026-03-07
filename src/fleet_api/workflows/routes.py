@@ -77,7 +77,7 @@ def _workflow_to_response(workflow: Workflow) -> dict[str, Any]:
     return {
         "id": workflow.id,
         "name": workflow.name,
-        "owner_agent_id": workflow.owner_agent_id,
+        "owner": workflow.owner_agent_id,
         "description": workflow.description,
         "tags": workflow.tags,
         "input_schema": workflow.input_schema,
@@ -94,7 +94,7 @@ def _workflow_to_response(workflow: Workflow) -> dict[str, Any]:
         "_links": {
             "self": {"href": f"/workflows/{workflow.id}"},
             "run": {"href": f"/workflows/{workflow.id}/run", "method": "POST"},
-            "tasks": {"href": f"/tasks?workflow_id={workflow.id}"},
+            "tasks": {"href": f"/workflows/{workflow.id}/tasks"},
             "update": {"href": f"/workflows/{workflow.id}", "method": "PUT"},
             "owner": {"href": f"/agents/{workflow.owner_agent_id}"},
         },
