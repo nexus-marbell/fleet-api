@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     fleet_api_host: str = "0.0.0.0"
     fleet_api_port: int = 8000
 
+    # API identity
+    api_version: str = "1.0.0"
+    base_url: str = "http://localhost:8000"
+
+    # Rate limiting
+    rate_limit_rpm: int = 120
+    rate_limit_burst: int = 20
+
     # Limits (RFC 1 defaults)
     fleet_task_retention_days: int = 30
     fleet_retask_max_depth: int = 10
