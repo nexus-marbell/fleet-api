@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _START_MONOTONIC: float = time.monotonic()
-_START_WALL: datetime = datetime.now(UTC)
 
 # ---------------------------------------------------------------------------
 # Router
