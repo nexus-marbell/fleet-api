@@ -1,8 +1,11 @@
-"""Task API routes — dispatch, read, list, and cancel endpoints.
+"""Task API routes — dispatch, read, list, cancel, and sidecar event endpoints.
 
 Routes use full paths (e.g. /workflows/{workflow_id}/run) because task
 endpoints nest under /workflows/{id}/ per the RFC.
 The router is mounted WITHOUT a prefix in app.py.
+
+The sidecar event endpoint (POST /tasks/{task_id}/events) uses a flat path
+because the sidecar only knows task_id, not the workflow.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from fleet_api.tasks.models import Task
 from fleet_api.tasks.service import (
     TaskService,
     cancel_task,
+    process_sidecar_event,
     task_to_detail_response,
     task_to_summary_response,
 )
@@ -58,6 +62,18 @@ class TaskCancelRequest(BaseModel):
     """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/cancel."""
 
     reason: str | None = None
+
+
+class TaskEventRequest(BaseModel):
+    """Request body for POST /tasks/{task_id}/events (sidecar)."""
+
+    event_type: str = Field(
+        ..., description="Event type: status, progress, log, completed, failed, heartbeat"
+    )
+    data: dict[str, Any] = Field(
+        default_factory=dict, description="Event payload"
+    )
+    sequence: int = Field(..., description="Monotonically increasing sequence number", gt=0)
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +296,46 @@ async def cancel_task_endpoint(
     )
 
     return _cancel_response(task, cancelled_by=agent.agent_id, reason=reason)
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/{task_id}/events (AUTHENTICATED — sidecar) — Issue #17
+# ---------------------------------------------------------------------------
+
+
+@router.post("/tasks/{task_id}/events", status_code=201)
+async def post_task_event(
+    task_id: str,
+    body: TaskEventRequest,
+    agent: AuthenticatedAgent | None = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Receive an execution event from the sidecar.
+
+    Updates task status, progress, or result based on event_type.
+    Only the task's executor agent may post events.
+    """
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
+
+    event, task = await process_sidecar_event(
+        session=session,
+        task_id=task_id,
+        event_type=body.event_type,
+        data=body.data,
+        sequence=body.sequence,
+        executor_agent_id=agent.agent_id,
+    )
+
+    return {
+        "received": True,
+        "event_id": event.id,
+        "task_id": task.id,
+        "event_type": event.event_type,
+        "sequence": event.sequence,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "_links": {
+            "task": {"href": f"/workflows/{task.workflow_id}/tasks/{task.id}"},
+            "events": {"href": f"/tasks/{task.id}/events"},
+        },
+    }

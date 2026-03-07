@@ -1,4 +1,4 @@
-"""Agent API routes — registration, heartbeat, profile lookup."""
+"""Agent API routes — registration, heartbeat, profile lookup, pending tasks."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from fleet_api.agents.service import AgentService
 from fleet_api.database.connection import get_session
 from fleet_api.errors import AuthError, ConflictError, ErrorCode, NotFoundError
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
+from fleet_api.tasks.service import TaskService
 
 router = APIRouter()
 
@@ -225,3 +226,54 @@ async def get_agent(
     result = resp.model_dump(mode="json")
     result["_links"] = _agent_links(agent.id)
     return result
+
+
+# ---------------------------------------------------------------------------
+# GET /agents/{agent_id}/tasks/pending (AUTHENTICATED) — Issue #17
+# ---------------------------------------------------------------------------
+
+
+def _pending_task_item(task: Any) -> dict[str, Any]:
+    """Build a single item in the pending tasks response."""
+    return {
+        "task_id": task.id,
+        "workflow_id": task.workflow_id,
+        "input": task.input,
+        "priority": (
+            task.priority.value if hasattr(task.priority, "value") else str(task.priority)
+        ),
+        "timeout_seconds": task.timeout_seconds,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+
+@router.get("/{agent_id}/tasks/pending")
+async def get_pending_tasks(
+    agent_id: str,
+    auth: AuthenticatedAgent = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Return tasks assigned to this agent in ``accepted`` status.
+
+    The sidecar polls this endpoint to discover work.
+    Only the agent itself may poll its own pending tasks.
+    """
+    if auth.agent_id != agent_id:
+        raise AuthError(
+            code=ErrorCode.NOT_AUTHORIZED,
+            message=(
+                f"Agent '{auth.agent_id}' cannot view pending tasks for '{agent_id}'."
+            ),
+            suggestion="You can only poll pending tasks for your own agent_id.",
+        )
+
+    svc = TaskService(session)
+    tasks = await svc.get_pending_tasks(agent_id)
+
+    data = [_pending_task_item(t) for t in tasks]
+    return {
+        "data": data,
+        "_links": {
+            "self": {"href": f"/agents/{agent_id}/tasks/pending"},
+        },
+    }
