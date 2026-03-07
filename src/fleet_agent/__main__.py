@@ -5,8 +5,12 @@ Usage::
     python -m fleet_agent
 
 Loads configuration from environment variables, self-registers with fleet-api,
-then starts the task poller, heartbeat loop, and local health endpoint
-concurrently.  Handles SIGTERM/SIGINT for graceful shutdown.
+then starts the task poller, signal poller, heartbeat loop, and local health
+endpoint concurrently.  Handles SIGTERM/SIGINT for graceful shutdown.
+
+Phase 2 addition (Unit 8): the signal poller runs concurrently with the task
+poller, checking for pause/resume/cancel/redirect/context injection signals
+at ``fleet_signal_poll_interval`` (default: 2 seconds).
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from fleet_agent.health import get_app
 from fleet_agent.heartbeat import run_heartbeat
 from fleet_agent.poller import TaskPoller
 from fleet_agent.registration import self_register
+from fleet_agent.signals import SignalPoller
 from fleet_agent.streamer import EventStreamer
 
 logging.basicConfig(
@@ -50,7 +55,7 @@ async def _run_poller(
     config: SidecarConfig,
     private_key: Ed25519PrivateKey,
 ) -> None:
-    """Set up and run the poller + streamer loop."""
+    """Set up and run the poller + streamer + signal poller loop."""
     executor = LocalExecutor(handler_command=config.fleet_executor_command)
     streamer = EventStreamer(
         fleet_api_url=config.fleet_api_url,
@@ -64,6 +69,12 @@ async def _run_poller(
         interval=config.fleet_poll_interval,
         max_concurrent=config.fleet_max_concurrent_tasks,
     )
+    signal_poller = SignalPoller(
+        fleet_api_url=config.fleet_api_url,
+        agent_id=config.fleet_agent_id,
+        private_key=private_key,
+        interval=config.fleet_signal_poll_interval,
+    )
 
     # Configure health endpoint with runtime references.
     configure_health(
@@ -72,7 +83,13 @@ async def _run_poller(
         agent_id=config.fleet_agent_id,
     )
 
-    await poller.run(executor, streamer)
+    # Run task poller and signal poller concurrently.
+    # The task poller handles task assignment and execution.
+    # The signal poller handles control signals for in-flight tasks.
+    await asyncio.gather(
+        poller.run(executor, streamer, signal_poller=signal_poller),
+        signal_poller.run(streamer),
+    )
 
 
 async def _main() -> None:
@@ -81,16 +98,17 @@ async def _main() -> None:
     private_key = _load_private_key(config.fleet_agent_private_key_path)
 
     logger.info(
-        "Starting fleet agent sidecar: agent=%s api=%s port=%d",
+        "Starting fleet agent sidecar: agent=%s api=%s port=%d signal_poll=%ds",
         config.fleet_agent_id,
         config.fleet_api_url,
         config.fleet_sidecar_port,
+        config.fleet_signal_poll_interval,
     )
 
     # 1. Self-register (blocks until successful).
     await self_register(config, private_key)
 
-    # 2. Concurrent: poller + heartbeat + health.
+    # 2. Concurrent: poller (+ signal poller) + heartbeat + health.
     health_app = get_app()
     health_config = uvicorn.Config(
         health_app,

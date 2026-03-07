@@ -1565,6 +1565,106 @@ class TaskService:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_pending_signals(self, agent_id: str) -> list[dict[str, Any]]:
+        """Return pending signals for in-flight tasks assigned to *agent_id*.
+
+        Queries for unacknowledged signal events (pause_requested,
+        resume_requested, context_injected) on tasks that are currently
+        running or paused.  Also includes cancel/redirect signals by checking
+        task status transitions.
+
+        This is part of the Phase 2 enhanced sidecar support (Unit 8,
+        RFC 1 §7.2 items 5-7).  The sidecar polls ``GET /agents/{id}/tasks/pending``
+        which now returns a ``signals`` array alongside pending tasks (Option A —
+        extending the existing endpoint rather than creating a new one, because
+        the sidecar already polls this endpoint and adding signals to the same
+        response avoids doubling poll traffic).
+
+        Returns:
+            List of signal dicts, each with: task_id, signal_type, timestamp,
+            and optional payload.
+        """
+        # Signal event types that the sidecar needs to pick up.
+        # These are created by pause_task, resume_task, and inject_context.
+        signal_event_types = ("pause_requested", "resume_requested", "context_injected")
+
+        # Find tasks assigned to this agent that are in an active (non-terminal,
+        # non-accepted) state — these are the tasks the sidecar is currently
+        # executing and may need signals for.
+        active_statuses = (TaskStatus.RUNNING, TaskStatus.PAUSED)
+
+        active_tasks_stmt = (
+            select(Task.id)
+            .where(Task.executor_agent_id == agent_id)
+            .where(Task.status.in_(active_statuses))
+        )
+        active_result = await self.session.execute(active_tasks_stmt)
+        active_task_ids = [row[0] for row in active_result.all()]
+
+        if not active_task_ids:
+            return []
+
+        # Query for signal events on active tasks.  We return all signal events
+        # and let the sidecar deduplicate by (task_id, signal_type, timestamp).
+        # This is simpler and more resilient than server-side ack tracking.
+        signals_stmt = (
+            select(TaskEvent)
+            .where(TaskEvent.task_id.in_(active_task_ids))
+            .where(TaskEvent.event_type.in_(signal_event_types))
+            .order_by(TaskEvent.created_at.asc())
+        )
+        signals_result = await self.session.execute(signals_stmt)
+        signal_events = list(signals_result.scalars().all())
+
+        signals: list[dict[str, Any]] = []
+        for evt in signal_events:
+            signal_item: dict[str, Any] = {
+                "task_id": evt.task_id,
+                "signal_type": evt.event_type,
+                "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+            }
+            if evt.data:
+                signal_item["payload"] = evt.data
+            signals.append(signal_item)
+
+        # Also check for tasks that were just redirected or cancelled by the
+        # principal — these don't have separate signal events; the task status
+        # itself has changed.  The sidecar needs to know so it can stop execution.
+        terminal_statuses = (TaskStatus.CANCELLED, TaskStatus.REDIRECTED)
+        recently_terminated_stmt = (
+            select(Task)
+            .where(Task.executor_agent_id == agent_id)
+            .where(Task.status.in_(terminal_statuses))
+            .where(Task.completed_at.isnot(None))
+            # Only return tasks completed in the last 60 seconds to avoid
+            # returning stale cancellations from previous sessions.
+            .where(
+                Task.completed_at >= func.now() - literal(60).op("* interval '1 second'")
+            )
+        )
+        terminated_result = await self.session.execute(recently_terminated_stmt)
+        terminated_tasks = list(terminated_result.scalars().all())
+
+        for task in terminated_tasks:
+            if task.status == TaskStatus.CANCELLED:
+                signals.append({
+                    "task_id": task.id,
+                    "signal_type": "cancel_requested",
+                    "timestamp": (
+                        task.completed_at.isoformat() if task.completed_at else ""
+                    ),
+                })
+            elif task.status == TaskStatus.REDIRECTED:
+                signals.append({
+                    "task_id": task.id,
+                    "signal_type": "redirect_requested",
+                    "timestamp": (
+                        task.completed_at.isoformat() if task.completed_at else ""
+                    ),
+                })
+
+        return signals
+
 
 # ---------------------------------------------------------------------------
 # Sidecar event processing

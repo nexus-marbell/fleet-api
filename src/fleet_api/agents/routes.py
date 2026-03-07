@@ -253,9 +253,22 @@ async def get_pending_tasks(
     auth: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Return tasks assigned to this agent in ``accepted`` status.
+    """Return tasks assigned to this agent in ``accepted`` status, plus pending signals.
 
-    The sidecar polls this endpoint to discover work.
+    The sidecar polls this endpoint to discover work AND to pick up control
+    signals (pause/resume/cancel/redirect/context injection) for in-flight tasks.
+
+    Phase 2 addition (Unit 8, RFC 1 §7.2 items 5-7): the response now includes
+    a ``signals`` array alongside ``data`` (pending tasks).  This is Option A from
+    the task specification — extending the existing endpoint rather than adding
+    ``GET /agents/{id}/signals`` — because:
+
+    1. The sidecar already polls this endpoint on every cycle.
+    2. Signals and pending tasks share the same auth model (agent polls its own).
+    3. A single HTTP request is cheaper than two, especially with Ed25519 signing.
+    4. The response shape is additive (backward-compatible): existing sidecars
+       that don't read ``signals`` continue to work unchanged.
+
     Only the agent itself may poll its own pending tasks.
     """
     if auth.agent_id != agent_id:
@@ -269,10 +282,12 @@ async def get_pending_tasks(
 
     svc = TaskService(session)
     tasks = await svc.get_pending_tasks(agent_id)
+    signals = await svc.get_pending_signals(agent_id)
 
     data = [_pending_task_item(t) for t in tasks]
     return {
         "data": data,
+        "signals": signals,
         "_links": {
             # HATEOAS _links: object form {"href": ...} per Agentic API Standard §2
             # (spec showed plain string — implementation is more correct)

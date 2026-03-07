@@ -33,5 +33,14 @@ class SidecarConfig(BaseSettings):
     fleet_heartbeat_interval: int = Field(
         default=30, description="Heartbeat interval in seconds"
     )
+    fleet_signal_poll_interval: int = Field(
+        default=2,
+        description=(
+            "Signal poll interval in seconds.  Shorter than fleet_poll_interval "
+            "because signals (pause/resume/cancel/redirect/context) are latency-"
+            "sensitive control plane operations — the principal expects sub-second "
+            "to low-single-digit second response times."
+        ),
+    )
 
     model_config = {"env_prefix": ""}

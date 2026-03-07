@@ -118,6 +118,11 @@ class TestPendingTasksHappyPath:
             "get_pending_tasks",
             new_callable=AsyncMock,
             return_value=mock_tasks,
+        ), patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
+            new_callable=AsyncMock,
+            return_value=[],
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -144,6 +149,11 @@ class TestPendingTasksHappyPath:
             "get_pending_tasks",
             new_callable=AsyncMock,
             return_value=[mock_task],
+        ), patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
+            new_callable=AsyncMock,
+            return_value=[],
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -177,6 +187,11 @@ class TestPendingTasksEmpty:
             "get_pending_tasks",
             new_callable=AsyncMock,
             return_value=[],
+        ), patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
+            new_callable=AsyncMock,
+            return_value=[],
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -205,7 +220,12 @@ class TestPendingTasksOnlyAccepted:
             "get_pending_tasks",
             new_callable=AsyncMock,
             return_value=[],
-        ) as mock_method:
+        ) as mock_method, patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 await client.get(f"/agents/{AGENT_ID}/tasks/pending")
@@ -270,6 +290,11 @@ class TestPendingTasksPriorityOrdering:
             "get_pending_tasks",
             new_callable=AsyncMock,
             return_value=tasks,
+        ), patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
+            new_callable=AsyncMock,
+            return_value=[],
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -298,6 +323,11 @@ class TestPendingTasksPriorityOrdering:
             "get_pending_tasks",
             new_callable=AsyncMock,
             return_value=tasks,
+        ), patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
+            new_callable=AsyncMock,
+            return_value=[],
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -327,6 +357,11 @@ class TestPendingTasksLinks:
         with patch.object(
             __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
             "get_pending_tasks",
+            new_callable=AsyncMock,
+            return_value=[],
+        ), patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_signals",
             new_callable=AsyncMock,
             return_value=[],
         ):
