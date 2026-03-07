@@ -10,8 +10,12 @@ have no real database dependency. Tests cover:
   - Priority validation
   - Auth required
   - Task ID format
-  - HATEOAS links
-  - Response field names match RFC spec
+  - HATEOAS links ({"href": "..."} format per RFC)
+  - Response field names match RFC spec (caller, executor)
+  - Input field included in response
+  - Executor override via request body
+  - Metadata passthrough
+  - Optional fields default handling
 """
 
 from __future__ import annotations
@@ -31,7 +35,11 @@ from fleet_api.errors import (
     InputValidationError,
     NotFoundError,
 )
-from fleet_api.middleware.auth import AuthenticatedAgent, get_agent_lookup, require_auth
+from fleet_api.middleware.auth import (
+    AuthenticatedAgent,
+    get_agent_lookup,
+    require_auth,
+)
 from fleet_api.tasks.models import Task, TaskPriority, TaskStatus
 from fleet_api.tasks.routes import get_task_service
 from fleet_api.workflows.models import Workflow, WorkflowStatus
@@ -42,48 +50,6 @@ from fleet_api.workflows.models import Workflow, WorkflowStatus
 
 AGENT_ID = "test-agent-001"
 WORKFLOW_ID = "wf-cellular-automaton"
-TASK_ID = "task-a1b2c3d4"
-
-
-def _task_base_path(task_id: str = TASK_ID, wf_id: str = WORKFLOW_ID) -> str:
-    return f"/workflows/{wf_id}/tasks/{task_id}"
-
-
-def _mock_links(task_id: str = TASK_ID, wf_id: str = WORKFLOW_ID) -> dict:
-    """Build the expected HATEOAS links for test assertions."""
-    base = _task_base_path(task_id, wf_id)
-    return {
-        "self": base,
-        "stream": f"{base}/stream",
-        "pause": {"method": "POST", "href": f"{base}/pause"},
-        "cancel": {"method": "POST", "href": f"{base}/cancel"},
-        "context": {"method": "POST", "href": f"{base}/context"},
-        "workflow": f"/workflows/{wf_id}",
-    }
-
-
-def _mock_response(
-    task_id: str = TASK_ID,
-    include_links: bool = True,
-    idempotency: dict | None = None,
-    priority: str = "normal",
-) -> dict:
-    """Build a standard mock response dict."""
-    resp: dict[str, Any] = {
-        "task_id": task_id,
-        "workflow_id": WORKFLOW_ID,
-        "status": "accepted",
-        "caller": AGENT_ID,
-        "executor": "grok-pi-dev",
-        "priority": priority,
-        "timeout_seconds": 300,
-        "created_at": "2026-03-07T14:30:00+00:00",
-        "estimated_duration_seconds": 15,
-        "_links": _mock_links(task_id) if include_links else {},
-    }
-    if idempotency is not None:
-        resp["idempotency"] = idempotency
-    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +108,9 @@ def _make_task(
 class MockAgentLookup:
     """In-memory agent store for auth override."""
 
-    async def get_agent_public_key(self, agent_id: str) -> Ed25519PublicKey | None:
+    async def get_agent_public_key(
+        self, agent_id: str
+    ) -> Ed25519PublicKey | None:
         return None
 
     async def is_agent_suspended(self, agent_id: str) -> bool:
@@ -158,15 +126,57 @@ def _create_test_app(
     app = create_app()
 
     if auth_override:
+
         async def mock_auth() -> AuthenticatedAgent:
             mock_key = MagicMock(spec=Ed25519PublicKey)
-            return AuthenticatedAgent(agent_id=agent_id, public_key=mock_key)
+            return AuthenticatedAgent(
+                agent_id=agent_id, public_key=mock_key
+            )
 
         app.dependency_overrides[require_auth] = mock_auth
 
     app.dependency_overrides[get_agent_lookup] = lambda: MockAgentLookup()
     app.dependency_overrides[get_task_service] = lambda: mock_service
     return app
+
+
+def _standard_response(
+    task_id: str = "task-a1b2c3d4",
+    workflow_id: str = WORKFLOW_ID,
+    caller: str = AGENT_ID,
+    executor: str = "grok-pi-dev",
+    status: str = "accepted",
+    input_data: dict[str, Any] | None = None,
+    priority: str = "normal",
+    timeout_seconds: int | None = 300,
+    estimated_duration_seconds: int | None = 15,
+    idempotency: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a standard response dict for mock_service.build_task_response."""
+    base = f"/workflows/{workflow_id}/tasks/{task_id}"
+    resp: dict[str, Any] = {
+        "task_id": task_id,
+        "workflow_id": workflow_id,
+        "status": status,
+        "caller": caller,
+        "executor": executor,
+        "input": input_data or {"rule": 30},
+        "priority": priority,
+        "timeout_seconds": timeout_seconds,
+        "created_at": "2026-03-07T14:30:00+00:00",
+        "estimated_duration_seconds": estimated_duration_seconds,
+        "_links": {
+            "self": {"href": base},
+            "stream": {"href": f"{base}/stream"},
+            "cancel": {"method": "POST", "href": f"{base}/cancel"},
+            "pause": {"method": "POST", "href": f"{base}/pause"},
+            "context": {"method": "POST", "href": f"{base}/context"},
+            "workflow": {"href": f"/workflows/{workflow_id}"},
+        },
+    }
+    if idempotency is not None:
+        resp["idempotency"] = idempotency
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +204,9 @@ def app(mock_service: MagicMock) -> Any:
 @pytest.fixture
 async def client(app: Any) -> AsyncClient:  # type: ignore[misc]
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as ac:
         yield ac
 
 
@@ -211,14 +223,18 @@ class TestTaskRunSuccess:
         """POST /workflows/{id}/run with valid input returns 202 Accepted."""
         mock_task = _make_task()
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response()
+            return_value=_standard_response()
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -226,7 +242,7 @@ class TestTaskRunSuccess:
 
         assert response.status_code == 202
         data = response.json()
-        assert data["task_id"] == TASK_ID
+        assert data["task_id"] == "task-a1b2c3d4"
         assert data["workflow_id"] == WORKFLOW_ID
         assert data["status"] == "accepted"
 
@@ -237,42 +253,80 @@ class TestTaskRunSuccess:
         """Response uses 'caller' and 'executor', not internal column names."""
         mock_task = _make_task()
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response(include_links=False)
+            return_value=_standard_response()
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
             )
 
         data = response.json()
-        # RFC field names — NOT internal model column names
+        # RFC field names -- NOT internal model column names
         assert "caller" in data
         assert "executor" in data
         assert "principal_agent_id" not in data
         assert "executor_agent_id" not in data
 
     @pytest.mark.asyncio
+    async def test_response_includes_input(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Response includes the input object passed in the request."""
+        mock_task = _make_task(input_data={"rule": 42, "steps": 100})
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response(
+                input_data={"rule": 42, "steps": 100}
+            )
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={"input": {"rule": 42, "steps": 100}},
+            )
+
+        data = response.json()
+        assert "input" in data
+        assert data["input"]["rule"] == 42
+        assert data["input"]["steps"] == 100
+
+    @pytest.mark.asyncio
     async def test_task_id_format(
         self, app: Any, mock_service: MagicMock
     ) -> None:
         """Task ID starts with 'task-' prefix."""
-        alt_id = "task-f7e8d9c0"
-        mock_task = _make_task(task_id=alt_id)
+        mock_task = _make_task(task_id="task-f7e8d9c0")
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response(task_id=alt_id, include_links=False)
+            return_value=_standard_response(task_id="task-f7e8d9c0")
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -288,14 +342,18 @@ class TestTaskRunSuccess:
         """Response includes correct HATEOAS _links for accepted status."""
         mock_task = _make_task()
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response()
+            return_value=_standard_response()
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -309,11 +367,22 @@ class TestTaskRunSuccess:
         assert "cancel" in links
         assert "context" in links
         assert "workflow" in links
-        # Verify paths are correct
-        base = _task_base_path()
-        assert links["self"] == base
-        assert links["stream"] == f"{base}/stream"
-        assert links["workflow"] == f"/workflows/{WORKFLOW_ID}"
+        # Verify href format (dict with "href" key, not plain strings)
+        assert (
+            links["self"]["href"]
+            == f"/workflows/{WORKFLOW_ID}/tasks/task-a1b2c3d4"
+        )
+        assert (
+            links["stream"]["href"]
+            == f"/workflows/{WORKFLOW_ID}/tasks/task-a1b2c3d4/stream"
+        )
+        assert links["workflow"]["href"] == f"/workflows/{WORKFLOW_ID}"
+        # Action links include method
+        assert links["cancel"]["method"] == "POST"
+        assert (
+            links["cancel"]["href"]
+            == f"/workflows/{WORKFLOW_ID}/tasks/task-a1b2c3d4/cancel"
+        )
 
     @pytest.mark.asyncio
     async def test_create_task_with_priority(
@@ -322,16 +391,18 @@ class TestTaskRunSuccess:
         """Task creation respects priority parameter."""
         mock_task = _make_task(priority=TaskPriority.HIGH)
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response(
-                include_links=False, priority="high"
-            )
+            return_value=_standard_response(priority="high")
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}, "priority": "high"},
@@ -344,6 +415,136 @@ class TestTaskRunSuccess:
         mock_service.create_task.assert_called_once()
         call_kwargs = mock_service.create_task.call_args
         assert call_kwargs.kwargs["priority"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_create_task_with_executor_override(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Task creation passes executor from request body to service."""
+        mock_task = _make_task(executor="custom-executor-agent")
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response(
+                executor="custom-executor-agent"
+            )
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={
+                    "input": {"rule": 30},
+                    "executor": "custom-executor-agent",
+                },
+            )
+
+        assert response.status_code == 202
+        data = response.json()
+        assert data["executor"] == "custom-executor-agent"
+        call_kwargs = mock_service.create_task.call_args
+        assert (
+            call_kwargs.kwargs["executor_agent_id"]
+            == "custom-executor-agent"
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_task_with_metadata(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Task creation passes metadata from request body to service."""
+        mock_task = _make_task()
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response()
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={
+                    "input": {"rule": 30},
+                    "metadata": {"source": "test", "trace_id": "abc123"},
+                },
+            )
+
+        assert response.status_code == 202
+        call_kwargs = mock_service.create_task.call_args
+        assert call_kwargs.kwargs["metadata"] == {
+            "source": "test",
+            "trace_id": "abc123",
+        }
+
+    @pytest.mark.asyncio
+    async def test_default_priority_is_normal(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """When priority is not provided, it defaults to 'normal'."""
+        mock_task = _make_task()
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response()
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={"input": {"rule": 30}},
+            )
+
+        assert response.status_code == 202
+        call_kwargs = mock_service.create_task.call_args
+        assert call_kwargs.kwargs["priority"] == "normal"
+
+    @pytest.mark.asyncio
+    async def test_optional_fields_default_to_none(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Optional fields (executor, timeout, metadata) default to None."""
+        mock_task = _make_task()
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response()
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={"input": {"rule": 30}},
+            )
+
+        assert response.status_code == 202
+        call_kwargs = mock_service.create_task.call_args
+        assert call_kwargs.kwargs["executor_agent_id"] is None
+        assert call_kwargs.kwargs["timeout_seconds"] is None
+        assert call_kwargs.kwargs["metadata"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +568,9 @@ class TestTaskRunErrors:
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 "/workflows/wf-ghost/run",
                 json={"input": {"rule": 30}},
@@ -385,13 +588,20 @@ class TestTaskRunErrors:
         mock_service.create_task = AsyncMock(
             side_effect=InputValidationError(
                 code=ErrorCode.INVALID_INPUT,
-                message="Input validation failed: 'rule' is a required property",
-                suggestion="Check the input against the workflow's input_schema.",
+                message=(
+                    "Input validation failed: "
+                    "'rule' is a required property"
+                ),
+                suggestion=(
+                    "Check the input against the workflow's input_schema."
+                ),
             )
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"wrong_field": "value"}},
@@ -409,13 +619,18 @@ class TestTaskRunErrors:
         mock_service.create_task = AsyncMock(
             side_effect=InputValidationError(
                 code=ErrorCode.INVALID_INPUT,
-                message="Invalid priority 'urgent'. Must be one of: low, normal, high, critical.",
+                message=(
+                    "Invalid priority 'urgent'. "
+                    "Must be one of: low, normal, high, critical."
+                ),
                 suggestion="Use one of: low, normal, high, critical.",
             )
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}, "priority": "urgent"},
@@ -433,13 +648,20 @@ class TestTaskRunErrors:
         mock_service.create_task = AsyncMock(
             side_effect=InfrastructureError(
                 code=ErrorCode.AGENT_SUSPENDED,
-                message="Workflow owner agent 'grok-pi-dev' is suspended.",
-                suggestion="The executor agent is currently unavailable. Try again later.",
+                message=(
+                    "Workflow owner agent 'grok-pi-dev' is suspended."
+                ),
+                suggestion=(
+                    "The executor agent is currently unavailable. "
+                    "Try again later."
+                ),
             )
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -448,6 +670,24 @@ class TestTaskRunErrors:
         assert response.status_code == 503
         data = response.json()
         assert data["code"] == "AGENT_SUSPENDED"
+
+    @pytest.mark.asyncio
+    async def test_missing_input_field(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """POST /workflows/{id}/run without 'input' field returns 422."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={"priority": "normal"},
+            )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["code"] == "INVALID_INPUT"
 
 
 # ---------------------------------------------------------------------------
@@ -459,12 +699,14 @@ class TestTaskRunAuth:
     @pytest.mark.asyncio
     async def test_auth_required(self, mock_service: MagicMock) -> None:
         """POST /workflows/{id}/run without auth returns 401."""
-        # Create app WITHOUT auth override (uses real require_auth which will
-        # fail because no Authorization header is provided)
+        # Create app WITHOUT auth override (uses real require_auth which
+        # will fail because no Authorization header is provided)
         app = _create_test_app(mock_service, auth_override=False)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -484,17 +726,19 @@ class TestTaskRunIdempotency:
     async def test_idempotency_replay(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Same Idempotency-Key + same input returns 200 with replayed status."""
-        idem_key = "run-ca-rule30-2026-03-07"
-        mock_task = _make_task(idempotency_key=idem_key)
+        """Same Idempotency-Key + same input returns 200 with replayed."""
+        mock_task = _make_task(
+            idempotency_key="run-ca-rule30-2026-03-07"
+        )
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, True))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, True)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response(
-                include_links=False,
+            return_value=_standard_response(
                 idempotency={
-                    "key": idem_key,
+                    "key": "run-ca-rule30-2026-03-07",
                     "status": "replayed",
                     "expires_at": "2026-03-08T14:30:00+00:00",
                 },
@@ -502,41 +746,52 @@ class TestTaskRunIdempotency:
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
-                headers={"Idempotency-Key": idem_key},
+                headers={
+                    "Idempotency-Key": "run-ca-rule30-2026-03-07"
+                },
             )
 
         assert response.status_code == 200
         data = response.json()
         assert data["idempotency"]["status"] == "replayed"
-        assert data["idempotency"]["key"] == idem_key
+        assert (
+            data["idempotency"]["key"] == "run-ca-rule30-2026-03-07"
+        )
 
     @pytest.mark.asyncio
     async def test_idempotency_mismatch(
         self, app: Any, mock_service: MagicMock
     ) -> None:
         """Same Idempotency-Key + different input returns 422."""
-        idem_key = "run-ca-rule30-2026-03-07"
         mock_service.create_task = AsyncMock(
             side_effect=InputValidationError(
                 code=ErrorCode.IDEMPOTENCY_MISMATCH,
                 message=(
-                    f"Idempotency key '{idem_key}' was already "
-                    "used with different input."
+                    "Idempotency key 'run-ca-rule30-2026-03-07' "
+                    "was already used with different input."
                 ),
-                suggestion="Use a new idempotency key.",
+                suggestion=(
+                    "Use a new idempotency key for different input."
+                ),
             )
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 110}},
-                headers={"Idempotency-Key": idem_key},
+                headers={
+                    "Idempotency-Key": "run-ca-rule30-2026-03-07"
+                },
             )
 
         assert response.status_code == 422
@@ -550,11 +805,12 @@ class TestTaskRunIdempotency:
         """New Idempotency-Key creates task with idempotency block."""
         mock_task = _make_task(idempotency_key="brand-new-key")
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response(
-                include_links=False,
+            return_value=_standard_response(
                 idempotency={
                     "key": "brand-new-key",
                     "status": "created",
@@ -564,7 +820,9 @@ class TestTaskRunIdempotency:
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -584,14 +842,18 @@ class TestTaskRunIdempotency:
         """Without Idempotency-Key header, no idempotency block."""
         mock_task = _make_task()
         mock_wf = _make_workflow()
-        mock_service.create_task = AsyncMock(return_value=(mock_task, False))
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
         mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
-            return_value=_mock_response(include_links=False)
+            return_value=_standard_response()
         )
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
             response = await client.post(
                 f"/workflows/{WORKFLOW_ID}/run",
                 json={"input": {"rule": 30}},
@@ -601,6 +863,81 @@ class TestTaskRunIdempotency:
         data = response.json()
         assert "idempotency" not in data
 
+    @pytest.mark.asyncio
+    async def test_idempotency_key_from_body(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Idempotency key can be provided in request body."""
+        mock_task = _make_task(idempotency_key="body-key")
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response(
+                idempotency={
+                    "key": "body-key",
+                    "status": "created",
+                    "expires_at": "2026-03-08T14:30:00+00:00",
+                },
+            )
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={
+                    "input": {"rule": 30},
+                    "idempotency_key": "body-key",
+                },
+            )
+
+        assert response.status_code == 202
+        call_kwargs = mock_service.create_task.call_args
+        assert call_kwargs.kwargs["idempotency_key"] == "body-key"
+
+    @pytest.mark.asyncio
+    async def test_header_idempotency_key_takes_precedence(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Header Idempotency-Key takes precedence over body."""
+        mock_task = _make_task(idempotency_key="header-key")
+        mock_wf = _make_workflow()
+        mock_service.create_task = AsyncMock(
+            return_value=(mock_task, False)
+        )
+        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
+        mock_service.build_task_response = MagicMock(
+            return_value=_standard_response(
+                idempotency={
+                    "key": "header-key",
+                    "status": "created",
+                    "expires_at": "2026-03-08T14:30:00+00:00",
+                },
+            )
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/workflows/{WORKFLOW_ID}/run",
+                json={
+                    "input": {"rule": 30},
+                    "idempotency_key": "body-key",
+                },
+                headers={"Idempotency-Key": "header-key"},
+            )
+
+        assert response.status_code == 202
+        call_kwargs = mock_service.create_task.call_args
+        assert call_kwargs.kwargs["idempotency_key"] == "header-key"
+
 
 # ---------------------------------------------------------------------------
 # Service unit tests — build_task_links
@@ -609,22 +946,37 @@ class TestTaskRunIdempotency:
 
 class TestBuildTaskLinks:
     def test_accepted_status_links(self) -> None:
-        """Accepted status includes self, stream, pause, cancel, context, workflow."""
+        """Accepted status has self, stream, pause, cancel, context, workflow."""
         from fleet_api.tasks.service import build_task_links
 
         links = build_task_links("task-abc", "wf-test", "accepted")
-        assert links["self"] == "/workflows/wf-test/tasks/task-abc"
-        assert links["stream"] == "/workflows/wf-test/tasks/task-abc/stream"
-        assert links["workflow"] == "/workflows/wf-test"
+        assert (
+            links["self"]["href"]
+            == "/workflows/wf-test/tasks/task-abc"
+        )
+        assert (
+            links["stream"]["href"]
+            == "/workflows/wf-test/tasks/task-abc/stream"
+        )
+        assert links["workflow"]["href"] == "/workflows/wf-test"
         assert links["pause"]["method"] == "POST"
-        assert links["pause"]["href"] == "/workflows/wf-test/tasks/task-abc/pause"
+        assert (
+            links["pause"]["href"]
+            == "/workflows/wf-test/tasks/task-abc/pause"
+        )
         assert links["cancel"]["method"] == "POST"
-        assert links["cancel"]["href"] == "/workflows/wf-test/tasks/task-abc/cancel"
+        assert (
+            links["cancel"]["href"]
+            == "/workflows/wf-test/tasks/task-abc/cancel"
+        )
         assert links["context"]["method"] == "POST"
-        assert links["context"]["href"] == "/workflows/wf-test/tasks/task-abc/context"
+        assert (
+            links["context"]["href"]
+            == "/workflows/wf-test/tasks/task-abc/context"
+        )
 
     def test_completed_status_links(self) -> None:
-        """Completed status has no action links (pause, cancel, context)."""
+        """Completed status has no action links."""
         from fleet_api.tasks.service import build_task_links
 
         links = build_task_links("task-abc", "wf-test", "completed")
@@ -644,6 +996,15 @@ class TestBuildTaskLinks:
         assert "cancel" in links
         assert "context" in links
 
+    def test_paused_status_has_context_only(self) -> None:
+        """Paused status has context but not cancel or pause."""
+        from fleet_api.tasks.service import build_task_links
+
+        links = build_task_links("task-abc", "wf-test", "paused")
+        assert "context" in links
+        assert "cancel" not in links
+        assert "pause" not in links
+
 
 # ---------------------------------------------------------------------------
 # Service unit tests — validate_input
@@ -655,7 +1016,6 @@ class TestValidateInput:
         """No schema means any input is valid."""
         from fleet_api.tasks.service import TaskService
 
-        # We can call validate_input directly without a session
         svc = TaskService.__new__(TaskService)
         svc.validate_input({"anything": "goes"}, None)
 
@@ -700,7 +1060,9 @@ class TestBuildTaskResponse:
         task = _make_task(idempotency_key="my-key")
         wf = _make_workflow()
 
-        resp = svc.build_task_response(task, wf, is_replay=False, idempotency_key="my-key")
+        resp = svc.build_task_response(
+            task, wf, is_replay=False, idempotency_key="my-key"
+        )
         assert resp["idempotency"]["key"] == "my-key"
         assert resp["idempotency"]["status"] == "created"
         assert resp["idempotency"]["expires_at"] is not None
@@ -713,7 +1075,9 @@ class TestBuildTaskResponse:
         task = _make_task(idempotency_key="my-key")
         wf = _make_workflow()
 
-        resp = svc.build_task_response(task, wf, is_replay=True, idempotency_key="my-key")
+        resp = svc.build_task_response(
+            task, wf, is_replay=True, idempotency_key="my-key"
+        )
         assert resp["idempotency"]["status"] == "replayed"
 
     def test_response_without_idempotency(self) -> None:
@@ -724,7 +1088,9 @@ class TestBuildTaskResponse:
         task = _make_task(idempotency_key=None)
         wf = _make_workflow()
 
-        resp = svc.build_task_response(task, wf, is_replay=False, idempotency_key=None)
+        resp = svc.build_task_response(
+            task, wf, is_replay=False, idempotency_key=None
+        )
         assert "idempotency" not in resp
 
     def test_response_field_names(self) -> None:
@@ -735,7 +1101,9 @@ class TestBuildTaskResponse:
         task = _make_task()
         wf = _make_workflow()
 
-        resp = svc.build_task_response(task, wf, is_replay=False, idempotency_key=None)
+        resp = svc.build_task_response(
+            task, wf, is_replay=False, idempotency_key=None
+        )
         assert "caller" in resp
         assert "executor" in resp
         assert "principal_agent_id" not in resp
@@ -743,3 +1111,34 @@ class TestBuildTaskResponse:
         assert resp["caller"] == AGENT_ID
         assert resp["executor"] == "grok-pi-dev"
         assert resp["estimated_duration_seconds"] == 15
+
+    def test_response_includes_input(self) -> None:
+        """build_task_response includes the task input in the response."""
+        from fleet_api.tasks.service import TaskService
+
+        svc = TaskService.__new__(TaskService)
+        task = _make_task(input_data={"rule": 30})
+        wf = _make_workflow()
+
+        resp = svc.build_task_response(
+            task, wf, is_replay=False, idempotency_key=None
+        )
+        assert "input" in resp
+        assert resp["input"] == {"rule": 30}
+
+    def test_response_hateoas_href_format(self) -> None:
+        """build_task_response _links use {"href": "..."} format."""
+        from fleet_api.tasks.service import TaskService
+
+        svc = TaskService.__new__(TaskService)
+        task = _make_task()
+        wf = _make_workflow()
+
+        resp = svc.build_task_response(
+            task, wf, is_replay=False, idempotency_key=None
+        )
+        links = resp["_links"]
+        assert isinstance(links["self"], dict)
+        assert "href" in links["self"]
+        assert isinstance(links["workflow"], dict)
+        assert "href" in links["workflow"]

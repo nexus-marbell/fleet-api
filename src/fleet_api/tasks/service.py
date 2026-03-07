@@ -42,9 +42,9 @@ def build_task_links(task_id: str, workflow_id: str, status: str) -> dict[str, A
     """
     base = f"/workflows/{workflow_id}/tasks/{task_id}"
     links: dict[str, Any] = {
-        "self": base,
-        "stream": f"{base}/stream",
-        "workflow": f"/workflows/{workflow_id}",
+        "self": {"href": base},
+        "stream": {"href": f"{base}/stream"},
+        "workflow": {"href": f"/workflows/{workflow_id}"},
     }
 
     # Action links depend on status
@@ -244,6 +244,7 @@ class TaskService:
             "status": status_value,
             "caller": task.principal_agent_id,
             "executor": task.executor_agent_id,
+            "input": task.input,
             "priority": (
                 task.priority.value
                 if isinstance(task.priority, TaskPriority)
