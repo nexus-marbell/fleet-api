@@ -87,7 +87,6 @@ async def run_task(
             "require_auth returned None on a protected route"
         )
 
-    # Header takes precedence over body for idempotency key
     effective_idempotency_key = idempotency_key or body.idempotency_key
 
     task, workflow, is_replay = await service.create_task(
@@ -132,6 +131,7 @@ async def get_task(
 async def list_tasks(
     workflow_id: str,
     status: str | None = Query(None, description="Filter by task status"),
+    priority: str | None = Query(None, description="Filter by task priority"),
     caller: str | None = Query(None, description="Filter by calling agent ID"),
     since: str | None = Query(None, description="ISO 8601 start time (inclusive)"),
     until: str | None = Query(None, description="ISO 8601 end time (inclusive)"),
@@ -147,6 +147,7 @@ async def list_tasks(
     tasks, next_cursor, has_more, total_count = await service.list_tasks(
         workflow_id=workflow_id,
         status=status,
+        priority=priority,
         caller=caller,
         since=since,
         until=until,
@@ -154,12 +155,13 @@ async def list_tasks(
         limit=limit,
     )
 
-    data = [task_to_summary_response(t) for t in tasks]
+    items = [task_to_summary_response(t) for t in tasks]
 
-    # Build self link with query params
     params: list[str] = []
     if status is not None:
         params.append(f"status={status}")
+    if priority is not None:
+        params.append(f"priority={priority}")
     if caller is not None:
         params.append(f"caller={caller}")
     if since is not None:
@@ -177,19 +179,15 @@ async def list_tasks(
     }
     if next_cursor:
         response_links["next"] = {
-            "href": (
-                f"/workflows/{workflow_id}/tasks?cursor={next_cursor}&limit={limit}"
-            )
+            "href": f"/workflows/{workflow_id}/tasks?cursor={next_cursor}&limit={limit}"
         }
 
     response: dict[str, Any] = {
-        "data": data,
-        "pagination": {
-            "next_cursor": next_cursor,
-            "has_more": has_more,
-            "total_count": total_count,
-            "limit": limit,
-        },
+        "items": items,
+        "total_count": total_count,
+        "limit": limit,
+        "cursor": next_cursor,
+        "has_more": has_more,
         "_links": response_links,
     }
     return response

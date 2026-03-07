@@ -38,8 +38,14 @@ IDEMPOTENCY_TTL_HOURS = 24
 def build_task_links(task_id: str, workflow_id: str, status: TaskStatus | str) -> dict[str, Any]:
     """Build state-dependent HATEOAS links for a task (RFC section 3.6).
 
-    The set of available action links depends on the current task status.
-    Navigation links (self, stream, workflow) are always present.
+    All links use {"href": "..."} format for HATEOAS compliance.
+    Status-dependent action links per spec:
+      - accepted: cancel
+      - running: cancel, pause, context, redirect
+      - paused: cancel, resume
+      - completed: retask, rerun
+      - failed: retask, rerun
+      - cancelled/retasked/redirected: no action links (self + workflow only)
     """
     if not isinstance(status, TaskStatus):
         status = TaskStatus(status)
@@ -47,38 +53,28 @@ def build_task_links(task_id: str, workflow_id: str, status: TaskStatus | str) -
     base = f"/workflows/{workflow_id}/tasks/{task_id}"
     links: dict[str, Any] = {
         "self": {"href": base},
-        "stream": {"href": f"{base}/stream"},
-        "workflow": {"href": f"/workflows/{workflow_id}"},
     }
 
     if status == TaskStatus.ACCEPTED:
-        links["cancel"] = {"method": "POST", "href": f"{base}/cancel"}
+        links["cancel"] = {"href": f"{base}/cancel"}
 
     elif status == TaskStatus.RUNNING:
-        links["pause"] = {"method": "POST", "href": f"{base}/pause"}
-        links["cancel"] = {"method": "POST", "href": f"{base}/cancel"}
-        links["context"] = {"method": "POST", "href": f"{base}/context"}
-        links["redirect"] = {"method": "POST", "href": f"{base}/redirect"}
+        links["cancel"] = {"href": f"{base}/cancel"}
+        links["pause"] = {"href": f"{base}/pause"}
+        links["context"] = {"href": f"{base}/context"}
+        links["redirect"] = {"href": f"{base}/redirect"}
 
     elif status == TaskStatus.PAUSED:
-        links["resume"] = {"method": "POST", "href": f"{base}/resume"}
-        links["cancel"] = {"method": "POST", "href": f"{base}/cancel"}
-        links["context"] = {"method": "POST", "href": f"{base}/context"}
-        links["redirect"] = {"method": "POST", "href": f"{base}/redirect"}
+        links["cancel"] = {"href": f"{base}/cancel"}
+        links["resume"] = {"href": f"{base}/resume"}
 
     elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-        links["retask"] = {"method": "POST", "href": f"{base}/retask"}
-        links["rerun"] = {"method": "POST", "href": f"/workflows/{workflow_id}/run"}
+        links["retask"] = {"href": f"{base}/retask"}
+        links["rerun"] = {"href": f"/workflows/{workflow_id}/run"}
 
-    elif status == TaskStatus.CANCELLED:
-        links["rerun"] = {"method": "POST", "href": f"/workflows/{workflow_id}/run"}
+    # cancelled, retasked, redirected: no action links
 
-    elif status == TaskStatus.REDIRECTED:
-        links["redirected_to"] = {"href": f"{base}/redirected_to"}
-
-    elif status == TaskStatus.RETASKED:
-        links["retask_to"] = {"href": f"{base}/retask_to"}
-
+    links["workflow"] = {"href": f"/workflows/{workflow_id}"}
     return links
 
 
@@ -111,12 +107,10 @@ def task_to_detail_response(task: Task) -> dict[str, Any]:
         "created_at": task.created_at.isoformat() if task.created_at else None,
     }
 
-    # Always include started_at if present
     if task.started_at is not None:
         response["started_at"] = task.started_at.isoformat()
 
     if status == TaskStatus.RUNNING:
-        # Running tasks get progress and estimated_completion, no result
         response["progress"] = (
             task.metadata_.get("progress", 0) if task.metadata_ else 0
         )
@@ -124,7 +118,6 @@ def task_to_detail_response(task: Task) -> dict[str, Any]:
             task.metadata_.get("estimated_completion") if task.metadata_ else None
         )
     elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-        # Terminal states with result
         response["result"] = task.result
         response["warnings"] = (
             task.metadata_.get("warnings", []) if task.metadata_ else []
@@ -144,7 +137,6 @@ def task_to_detail_response(task: Task) -> dict[str, Any]:
         response["duration_seconds"] = _compute_duration(task.started_at, task.completed_at)
 
     elif status in (TaskStatus.CANCELLED, TaskStatus.REDIRECTED, TaskStatus.RETASKED):
-        # Other terminal states
         if task.completed_at is not None:
             response["completed_at"] = task.completed_at.isoformat()
 
@@ -163,18 +155,15 @@ def task_to_summary_response(task: Task) -> dict[str, Any]:
         "created_at": task.created_at.isoformat() if task.created_at else None,
     }
 
-    # Include completed_at for terminal states
     if task.completed_at is not None:
         response["completed_at"] = task.completed_at.isoformat()
 
-    # Include duration_seconds for completed tasks
     if status == TaskStatus.COMPLETED:
         response["duration_seconds"] = _compute_duration(task.started_at, task.completed_at)
 
     base = f"/workflows/{task.workflow_id}/tasks/{task.id}"
     response["_links"] = {
         "self": {"href": base},
-        "stream": {"href": f"{base}/stream"},
     }
     return response
 
@@ -276,7 +265,6 @@ class TaskService:
         if existing is None:
             return None
 
-        # Compare input: hash-based comparison for reliability
         existing_hash = hashlib.sha256(
             json.dumps(existing.input, sort_keys=True).encode()
         ).hexdigest()
@@ -312,33 +300,19 @@ class TaskService:
         """Create a task for a workflow.
 
         Returns (task, workflow, is_replay). is_replay is True if an existing
-        task was returned via idempotency replay.  The workflow is always
-        returned so the caller never needs a second DB fetch.
+        task was returned via idempotency replay.
         """
-        # 1. Idempotency check — BEFORE any other work.  On replay, workflow
-        #    fetch, suspension check, and input validation are wasted.  A replay
-        #    should return the original response regardless of current state.
         if idempotency_key is not None:
             existing = await self._check_idempotency(idempotency_key, input_data)
             if existing is not None:
                 workflow = await self.get_workflow_or_404(workflow_id)
                 return existing, workflow, True
 
-        # 2. Look up workflow
         workflow = await self.get_workflow_or_404(workflow_id)
-
-        # 3. Resolve effective executor: explicit parameter > workflow owner.
-        #    Must be resolved BEFORE suspension check so the check targets the
-        #    agent that will actually execute the task.
         effective_executor = executor_agent_id or workflow.owner_agent_id
-
-        # 4. Check effective executor is not suspended
         await self._check_agent_not_suspended(effective_executor)
-
-        # 5. Validate input against workflow's input_schema
         self.validate_input(input_data, workflow.input_schema)
 
-        # 6. Validate priority
         try:
             priority_enum = TaskPriority(priority)
         except ValueError:
@@ -349,7 +323,6 @@ class TaskService:
                 suggestion=f"Use one of: {valid}.",
             )
 
-        # 7. Create the task
         task_id = f"task-{uuid.uuid4().hex[:8]}"
         effective_timeout = timeout_seconds or workflow.timeout_seconds
         now = datetime.now(UTC)
@@ -369,7 +342,6 @@ class TaskService:
         )
         self.session.add(task)
 
-        # 8. Create initial TaskEvent
         event = TaskEvent(
             task_id=task_id,
             event_type="created",
@@ -413,7 +385,6 @@ class TaskService:
             "_links": build_task_links(task.id, task.workflow_id, status_value),
         }
 
-        # Idempotency block: only present when an idempotency key was provided
         effective_key = idempotency_key or task.idempotency_key
         if effective_key is not None:
             expires_at = (
@@ -430,11 +401,7 @@ class TaskService:
         return response
 
     async def get_task(self, workflow_id: str, task_id: str) -> Task:
-        """Get a single task by ID within a workflow.
-
-        Raises NotFoundError if workflow or task not found, or if the task
-        belongs to a different workflow.
-        """
+        """Get a single task by ID within a workflow."""
         await self._verify_workflow_exists(workflow_id)
 
         task = await self.session.get(Task, task_id)
@@ -454,6 +421,7 @@ class TaskService:
         self,
         workflow_id: str,
         status: str | None = None,
+        priority: str | None = None,
         caller: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -472,7 +440,6 @@ class TaskService:
             .order_by(Task.created_at.desc())
         )
 
-        # Apply filters
         if status is not None:
             try:
                 status_enum = TaskStatus(status)
@@ -484,6 +451,18 @@ class TaskService:
                     suggestion=f"Use one of: {valid_values}.",
                 )
             base_stmt = base_stmt.where(Task.status == status_enum)
+
+        if priority is not None:
+            try:
+                priority_enum = TaskPriority(priority)
+            except ValueError:
+                valid_values = ", ".join(p.value for p in TaskPriority)
+                raise InputValidationError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=f"Invalid priority filter '{priority}'.",
+                    suggestion=f"Use one of: {valid_values}.",
+                )
+            base_stmt = base_stmt.where(Task.priority == priority_enum)
 
         if caller is not None:
             base_stmt = base_stmt.where(Task.principal_agent_id == caller)
@@ -510,17 +489,14 @@ class TaskService:
                 )
             base_stmt = base_stmt.where(Task.created_at <= until_dt)
 
-        # Total count (after filters, before cursor/limit)
         count_stmt = select(func.count()).select_from(base_stmt.subquery())
         total_count = (await self.session.execute(count_stmt)).scalar_one()
 
-        # Apply cursor (created_at DESC ordering — cursor means "older than")
         stmt = base_stmt
         if cursor is not None:
             _cursor_task_id, cursor_created_at = decode_task_cursor(cursor)
             stmt = stmt.where(Task.created_at < cursor_created_at)
 
-        # Fetch limit + 1 to detect has_more
         stmt = stmt.limit(limit + 1)
         result = await self.session.execute(stmt)
         tasks = list(result.scalars().all())
