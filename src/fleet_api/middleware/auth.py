@@ -30,9 +30,14 @@ from fastapi import Depends, HTTPException, Request
 
 REPLAY_WINDOW = timedelta(minutes=5)
 
-# Endpoints that bypass authentication
+# Endpoints that bypass authentication (RFC §4.4).
+# /agents/register is not listed in RFC §4.4 but must be unprotected:
+# an agent cannot sign a registration request before it has registered a
+# keypair — the bootstrap paradox.  Documented as a deliberate decision.
+# / is the root path, conventionally the manifest or a redirect — kept
+# unprotected for discovery consistency.
 UNPROTECTED_PATHS: frozenset[str] = frozenset(
-    {"/", "/manifest", "/agents/register", "/health"}
+    {"/", "/manifest", "/agents/register", "/health", "/errors", "/openapi.json"}
 )
 
 
@@ -200,10 +205,11 @@ async def require_auth(
 
     Error codes:
 
-    * ``INVALID_SIGNATURE`` (401) -- malformed header or bad signature
-    * ``TIMESTAMP_EXPIRED`` (401) -- outside replay window
+    * ``INVALID_SIGNATURE`` (401) -- malformed/missing header or bad signature
+    * ``TIMESTAMP_EXPIRED`` (401) -- timestamp outside replay window
     * ``AGENT_NOT_REGISTERED`` (401) -- agent_id not found
     * ``NOT_AUTHORIZED`` (403) -- agent suspended
+    * ``SERVICE_UNAVAILABLE`` (503) -- agent lookup not configured
     """
     # 1. Skip unprotected paths
     if request.url.path in UNPROTECTED_PATHS:
@@ -222,7 +228,10 @@ async def require_auth(
     # 3. Validate timestamp
     timestamp_str = request.headers.get("X-Fleet-Timestamp")
     if timestamp_str is None:
-        raise auth_error("TIMESTAMP_EXPIRED", "Missing X-Fleet-Timestamp header")
+        # Missing header is a malformed request, not an expired timestamp.
+        # TIMESTAMP_EXPIRED is reserved for timestamps that parse but fall
+        # outside the ±5 min replay window (RFC §8).
+        raise auth_error("INVALID_SIGNATURE", "Missing X-Fleet-Timestamp header")
 
     try:
         validate_timestamp(timestamp_str)
@@ -230,14 +239,29 @@ async def require_auth(
         raise auth_error("TIMESTAMP_EXPIRED", str(e)) from e
 
     # 4. Look up agent
-    public_key = await lookup.get_agent_public_key(agent_id)
+    try:
+        public_key = await lookup.get_agent_public_key(agent_id)
+    except NotImplementedError:
+        raise auth_error(
+            "SERVICE_UNAVAILABLE",
+            "Agent lookup is not configured",
+            status_code=503,
+        )
     if public_key is None:
         raise auth_error(
             "AGENT_NOT_REGISTERED", f"Agent '{agent_id}' is not registered"
         )
 
     # 5. Check suspension
-    if await lookup.is_agent_suspended(agent_id):
+    try:
+        suspended = await lookup.is_agent_suspended(agent_id)
+    except NotImplementedError:
+        raise auth_error(
+            "SERVICE_UNAVAILABLE",
+            "Agent lookup is not configured",
+            status_code=503,
+        )
+    if suspended:
         raise auth_error(
             "NOT_AUTHORIZED",
             f"Agent '{agent_id}' is suspended",
@@ -246,9 +270,13 @@ async def require_auth(
 
     # 6. Build signing string and verify
     body = await request.body()
+    # RFC §4.2: PATH includes query string (e.g., /workflows?status=active)
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
     signing_string = build_signing_string(
         method=request.method,
-        path=request.url.path,
+        path=path,
         timestamp=timestamp_str,
         body=body,
     )

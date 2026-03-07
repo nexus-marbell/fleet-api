@@ -19,6 +19,10 @@ def generate_test_keypair() -> tuple[Ed25519PrivateKey, bytes]:
     """Generate a test Ed25519 keypair.
 
     Returns ``(private_key, public_key_pem_bytes)``.
+
+    The PEM bytes are included in the return value for future integration
+    tests where the public key must be serialized for ``POST /agents/register``.
+    Unit tests typically use ``private_key.public_key()`` directly instead.
     """
     private_key = Ed25519PrivateKey.generate()
     public_key_pem = private_key.public_key().public_bytes(

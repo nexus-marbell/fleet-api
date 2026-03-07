@@ -72,6 +72,14 @@ def _create_test_app(mock_lookup: MockAgentLookup) -> FastAPI:
     async def register() -> dict[str, str]:
         return {"registered": "true"}
 
+    @app.get("/errors")
+    async def errors() -> dict[str, str]:
+        return {"errors": "catalog"}
+
+    @app.get("/openapi.json")
+    async def openapi_json() -> dict[str, str]:
+        return {"openapi": "3.1.0"}
+
     @app.get("/protected")
     async def protected(
         agent: AuthenticatedAgent | None = Depends(require_auth),
@@ -181,6 +189,18 @@ class TestUnprotectedPaths:
         response = await client.post("/agents/register")
         assert response.status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_errors_skips_auth(self, client: AsyncClient) -> None:
+        """GET /errors does not require authentication (RFC §4.4)."""
+        response = await client.get("/errors")
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_openapi_json_skips_auth(self, client: AsyncClient) -> None:
+        """GET /openapi.json does not require authentication (RFC §4.4)."""
+        response = await client.get("/openapi.json")
+        assert response.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Error paths
@@ -212,7 +232,7 @@ class TestRequireAuthErrors:
     async def test_missing_timestamp(
         self, client: AsyncClient, private_key_and_id: tuple
     ) -> None:
-        """Missing X-Fleet-Timestamp returns 401 TIMESTAMP_EXPIRED."""
+        """Missing X-Fleet-Timestamp returns 401 INVALID_SIGNATURE (malformed request)."""
         private_key, agent_id = private_key_and_id
         headers = sign_request("GET", "/protected", None, private_key, agent_id)
         del headers["X-Fleet-Timestamp"]
@@ -220,7 +240,7 @@ class TestRequireAuthErrors:
         response = await client.get("/protected", headers=headers)
         assert response.status_code == 401
         detail = response.json()["detail"]
-        assert detail["error"]["code"] == "TIMESTAMP_EXPIRED"
+        assert detail["error"]["code"] == "INVALID_SIGNATURE"
 
     @pytest.mark.asyncio
     async def test_expired_timestamp(
@@ -280,6 +300,102 @@ class TestRequireAuthErrors:
         imposter_key, _ = generate_test_keypair()
         headers = sign_request("GET", "/protected", None, imposter_key, agent_id)
 
+        response = await client.get("/protected", headers=headers)
+        assert response.status_code == 401
+        detail = response.json()["detail"]
+        assert detail["error"]["code"] == "INVALID_SIGNATURE"
+
+
+# ---------------------------------------------------------------------------
+# Placeholder lookup (Minor 2)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceholderAgentLookup:
+    @pytest.mark.asyncio
+    async def test_placeholder_returns_503(self) -> None:
+        """PlaceholderAgentLookup produces 503 SERVICE_UNAVAILABLE."""
+        app = FastAPI()
+
+        # Use the default get_agent_lookup (returns PlaceholderAgentLookup)
+        @app.get("/protected")
+        async def protected(
+            agent: AuthenticatedAgent | None = Depends(require_auth),
+        ) -> dict[str, str]:
+            assert agent is not None
+            return {"agent_id": agent.agent_id}
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            private_key, _ = generate_test_keypair()
+            headers = sign_request("GET", "/protected", None, private_key, "any-agent")
+
+            response = await client.get("/protected", headers=headers)
+            assert response.status_code == 503
+            detail = response.json()["detail"]
+            assert detail["error"]["code"] == "SERVICE_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# Query string signing (Minor 3 / Blocker 1 regression guard)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryStringSigning:
+    @pytest.mark.asyncio
+    async def test_query_params_included_in_signature(
+        self, client: AsyncClient, private_key_and_id: tuple
+    ) -> None:
+        """Query string is included in the signing string (RFC §4.2)."""
+        private_key, agent_id = private_key_and_id
+        path_with_query = "/protected?filter=active&page=1"
+        headers = sign_request("GET", path_with_query, None, private_key, agent_id)
+
+        response = await client.get(path_with_query, headers=headers)
+        assert response.status_code == 200
+        assert response.json() == {"agent_id": agent_id}
+
+    @pytest.mark.asyncio
+    async def test_altered_query_params_break_signature(
+        self, client: AsyncClient, private_key_and_id: tuple
+    ) -> None:
+        """Altering query params after signing invalidates the signature."""
+        private_key, agent_id = private_key_and_id
+        # Sign over one query string
+        headers = sign_request(
+            "GET", "/protected?status=active", None, private_key, agent_id
+        )
+        # Send with different query params (MITM tampering scenario)
+        response = await client.get("/protected?status=deleted", headers=headers)
+        assert response.status_code == 401
+        detail = response.json()["detail"]
+        assert detail["error"]["code"] == "INVALID_SIGNATURE"
+
+    @pytest.mark.asyncio
+    async def test_added_query_params_break_signature(
+        self, client: AsyncClient, private_key_and_id: tuple
+    ) -> None:
+        """Adding query params to a request signed without them breaks verification."""
+        private_key, agent_id = private_key_and_id
+        # Sign without query params
+        headers = sign_request("GET", "/protected", None, private_key, agent_id)
+        # Send with query params appended
+        response = await client.get("/protected?injected=true", headers=headers)
+        assert response.status_code == 401
+        detail = response.json()["detail"]
+        assert detail["error"]["code"] == "INVALID_SIGNATURE"
+
+    @pytest.mark.asyncio
+    async def test_removed_query_params_break_signature(
+        self, client: AsyncClient, private_key_and_id: tuple
+    ) -> None:
+        """Removing query params from a signed request breaks verification."""
+        private_key, agent_id = private_key_and_id
+        # Sign with query params
+        headers = sign_request(
+            "GET", "/protected?important=yes", None, private_key, agent_id
+        )
+        # Send without query params (stripped by MITM)
         response = await client.get("/protected", headers=headers)
         assert response.status_code == 401
         detail = response.json()["detail"]

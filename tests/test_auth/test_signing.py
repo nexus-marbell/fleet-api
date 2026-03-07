@@ -43,6 +43,23 @@ class TestBuildSigningString:
         expected = f"GET\n/agents\n2026-03-07T12:00:00+00:00\n{empty_hash}".encode()
         assert result == expected
 
+    def test_path_with_query_string(self) -> None:
+        """Path includes query string per RFC §4.2."""
+        path = "/workflows?status=active&page=2"
+        result = build_signing_string("GET", path, "2026-03-07T12:00:00+00:00", b"")
+
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        expected = f"GET\n{path}\n2026-03-07T12:00:00+00:00\n{empty_hash}".encode()
+        assert result == expected
+
+    def test_different_query_strings_produce_different_signing_strings(self) -> None:
+        """Changing query params changes the signing string."""
+        ts = "2026-03-07T12:00:00+00:00"
+        body = b""
+        result_a = build_signing_string("GET", "/tasks?status=active", ts, body)
+        result_b = build_signing_string("GET", "/tasks?status=deleted", ts, body)
+        assert result_a != result_b
+
 
 # ---------------------------------------------------------------------------
 # parse_authorization_header
@@ -206,3 +223,33 @@ class TestSignRequestHelper:
             "GET", "/agents", headers["X-Fleet-Timestamp"], b""
         )
         assert verify_signature(public_key, signing_string, signature) is True
+
+    def test_query_string_round_trip(self) -> None:
+        """sign_request() with query string produces verifiable signature."""
+        private_key, _ = generate_test_keypair()
+        public_key = private_key.public_key()
+        path_with_query = "/tasks?status=active&page=1"
+
+        headers = sign_request("GET", path_with_query, None, private_key, "agent-1")
+        _, signature = parse_authorization_header(headers["Authorization"])
+
+        signing_string = build_signing_string(
+            "GET", path_with_query, headers["X-Fleet-Timestamp"], b""
+        )
+        assert verify_signature(public_key, signing_string, signature) is True
+
+    def test_query_string_tampering_breaks_verification(self) -> None:
+        """Altering query params after signing breaks verification."""
+        private_key, _ = generate_test_keypair()
+        public_key = private_key.public_key()
+
+        headers = sign_request(
+            "GET", "/tasks?status=active", None, private_key, "agent-1"
+        )
+        _, signature = parse_authorization_header(headers["Authorization"])
+
+        # Verify with tampered query string
+        signing_string = build_signing_string(
+            "GET", "/tasks?status=deleted", headers["X-Fleet-Timestamp"], b""
+        )
+        assert verify_signature(public_key, signing_string, signature) is False
