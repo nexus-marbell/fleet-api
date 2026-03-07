@@ -155,7 +155,7 @@ async def list_tasks(
         limit=limit,
     )
 
-    items = [task_to_summary_response(t) for t in tasks]
+    data = [task_to_summary_response(t) for t in tasks]
 
     params: list[str] = []
     if status is not None:
@@ -183,11 +183,13 @@ async def list_tasks(
         }
 
     response: dict[str, Any] = {
-        "items": items,
-        "total_count": total_count,
-        "limit": limit,
-        "cursor": next_cursor,
-        "has_more": has_more,
+        "data": data,
+        "pagination": {
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "total_count": total_count,
+            "limit": limit,
+        },
         "_links": response_links,
     }
     return response

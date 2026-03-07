@@ -30,6 +30,9 @@ from fleet_api.tasks.service import build_task_links, encode_task_cursor
 AGENT_ID = "nexus-marbell"
 WORKFLOW_ID = "wf-cellular-automaton"
 
+# Links that appear unconditionally for every task status
+UNIVERSAL_LINKS = {"self", "workflow", "stream"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -347,7 +350,7 @@ class TestHATEOASLinks:
     async def test_accepted_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Accepted tasks have cancel link only (plus self + workflow)."""
+        """Accepted tasks have cancel link only (plus self + workflow + stream)."""
         task = _make_task(status=TaskStatus.ACCEPTED)
         mock_service.get_task = AsyncMock(return_value=task)
 
@@ -360,8 +363,11 @@ class TestHATEOASLinks:
         links = response.json()["_links"]
         assert "self" in links
         assert links["self"]["href"].endswith("/tasks/task-a1b2c3d4")
+        assert "stream" in links
+        assert links["stream"]["href"].endswith("/stream")
         assert "cancel" in links
-        assert "href" in links["cancel"]
+        assert links["cancel"]["method"] == "POST"
+        assert links["cancel"]["href"].endswith("/cancel")
         assert "workflow" in links
         # Should NOT have pause, resume, retask, rerun
         assert "pause" not in links
@@ -373,7 +379,7 @@ class TestHATEOASLinks:
     async def test_running_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Running tasks have cancel, pause, context, redirect links."""
+        """Running tasks have cancel, pause, context, redirect links with method: POST."""
         task = _make_task(
             status=TaskStatus.RUNNING,
             started_at=datetime(2026, 3, 7, 14, 30, 2, tzinfo=UTC),
@@ -388,21 +394,26 @@ class TestHATEOASLinks:
 
         links = response.json()["_links"]
         assert "self" in links
+        assert "stream" in links
         assert "cancel" in links
         assert links["cancel"]["href"].endswith("/cancel")
+        assert links["cancel"]["method"] == "POST"
         assert "pause" in links
         assert links["pause"]["href"].endswith("/pause")
+        assert links["pause"]["method"] == "POST"
         assert "context" in links
         assert links["context"]["href"].endswith("/context")
+        assert links["context"]["method"] == "POST"
         assert "redirect" in links
         assert links["redirect"]["href"].endswith("/redirect")
+        assert links["redirect"]["method"] == "POST"
         assert "workflow" in links
 
     @pytest.mark.asyncio
     async def test_paused_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Paused tasks have cancel, resume links (plus self + workflow)."""
+        """Paused tasks: resume, cancel, context, redirect, plus self + workflow + stream."""
         task = _make_task(
             status=TaskStatus.PAUSED,
             started_at=datetime(2026, 3, 7, 14, 30, 2, tzinfo=UTC),
@@ -417,9 +428,18 @@ class TestHATEOASLinks:
 
         links = response.json()["_links"]
         assert "self" in links
+        assert "stream" in links
         assert "resume" in links
-        assert "href" in links["resume"]
+        assert links["resume"]["href"].endswith("/resume")
+        assert links["resume"]["method"] == "POST"
         assert "cancel" in links
+        assert links["cancel"]["method"] == "POST"
+        assert "context" in links
+        assert links["context"]["href"].endswith("/context")
+        assert links["context"]["method"] == "POST"
+        assert "redirect" in links
+        assert links["redirect"]["href"].endswith("/redirect")
+        assert links["redirect"]["method"] == "POST"
         assert "workflow" in links
         # Should NOT have pause (already paused)
         assert "pause" not in links
@@ -428,7 +448,7 @@ class TestHATEOASLinks:
     async def test_completed_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Completed tasks have retask, rerun links."""
+        """Completed tasks have retask, rerun links with method: POST."""
         task = _make_task(
             status=TaskStatus.COMPLETED,
             result={"output": "done"},
@@ -445,17 +465,20 @@ class TestHATEOASLinks:
 
         links = response.json()["_links"]
         assert "self" in links
+        assert "stream" in links
         assert "retask" in links
         assert links["retask"]["href"].endswith("/retask")
+        assert links["retask"]["method"] == "POST"
         assert "rerun" in links
         assert links["rerun"]["href"] == f"/workflows/{WORKFLOW_ID}/run"
+        assert links["rerun"]["method"] == "POST"
         assert "workflow" in links
 
     @pytest.mark.asyncio
     async def test_failed_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Failed tasks have retask, rerun links."""
+        """Failed tasks have retask, rerun links with method: POST."""
         task = _make_task(
             status=TaskStatus.FAILED,
             result={"error": "timeout"},
@@ -472,15 +495,18 @@ class TestHATEOASLinks:
 
         links = response.json()["_links"]
         assert "self" in links
+        assert "stream" in links
         assert "retask" in links
+        assert links["retask"]["method"] == "POST"
         assert "rerun" in links
+        assert links["rerun"]["method"] == "POST"
         assert "workflow" in links
 
     @pytest.mark.asyncio
     async def test_cancelled_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Cancelled tasks have only self + workflow links (no action links)."""
+        """Cancelled tasks have rerun link (plus self + workflow + stream)."""
         task = _make_task(
             status=TaskStatus.CANCELLED,
             completed_at=datetime(2026, 3, 7, 14, 30, 15, tzinfo=UTC),
@@ -496,16 +522,18 @@ class TestHATEOASLinks:
         links = response.json()["_links"]
         assert "self" in links
         assert "workflow" in links
-        # No action links for cancelled
+        assert "stream" in links
+        assert "rerun" in links
+        assert links["rerun"]["method"] == "POST"
+        # No retask or cancel for cancelled
         assert "retask" not in links
-        assert "rerun" not in links
         assert "cancel" not in links
 
     @pytest.mark.asyncio
     async def test_redirected_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Redirected tasks have only self + workflow links (no action links)."""
+        """Redirected tasks have only self + workflow + stream links (no action links)."""
         task = _make_task(
             status=TaskStatus.REDIRECTED,
             completed_at=datetime(2026, 3, 7, 14, 30, 15, tzinfo=UTC),
@@ -521,14 +549,15 @@ class TestHATEOASLinks:
         links = response.json()["_links"]
         assert "self" in links
         assert "workflow" in links
+        assert "stream" in links
         # No action links for redirected
-        assert len(links) == 2
+        assert set(links.keys()) == UNIVERSAL_LINKS
 
     @pytest.mark.asyncio
     async def test_retasked_links(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Retasked tasks have only self + workflow links (no action links)."""
+        """Retasked tasks have only self + workflow + stream links (no action links)."""
         task = _make_task(
             status=TaskStatus.RETASKED,
             completed_at=datetime(2026, 3, 7, 14, 30, 15, tzinfo=UTC),
@@ -544,8 +573,9 @@ class TestHATEOASLinks:
         links = response.json()["_links"]
         assert "self" in links
         assert "workflow" in links
+        assert "stream" in links
         # No action links for retasked
-        assert len(links) == 2
+        assert set(links.keys()) == UNIVERSAL_LINKS
 
     @pytest.mark.asyncio
     async def test_all_links_use_href_format(
@@ -571,6 +601,36 @@ class TestHATEOASLinks:
             )
             assert "href" in link_value, f"Link '{link_name}' missing 'href' key"
 
+    @pytest.mark.asyncio
+    async def test_action_links_have_method_post(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """All action links (non-self, non-workflow, non-stream) include method: POST."""
+        task = _make_task(
+            status=TaskStatus.RUNNING,
+            started_at=datetime(2026, 3, 7, 14, 30, 2, tzinfo=UTC),
+        )
+        mock_service.get_task = AsyncMock(return_value=task)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                f"/workflows/{WORKFLOW_ID}/tasks/task-a1b2c3d4"
+            )
+
+        links = response.json()["_links"]
+        for link_name, link_value in links.items():
+            if link_name in UNIVERSAL_LINKS:
+                # self, workflow, stream should NOT have method
+                assert "method" not in link_value, (
+                    f"Non-action link '{link_name}' should not have 'method'"
+                )
+            else:
+                # Action links MUST have method: POST
+                assert link_value.get("method") == "POST", (
+                    f"Action link '{link_name}' should have method: POST"
+                )
+
 
 # ---------------------------------------------------------------------------
 # GET /workflows/{workflow_id}/tasks (list)
@@ -582,7 +642,7 @@ class TestListTasks:
     async def test_list_tasks_no_filters(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """GET tasks list with no filters returns items with pagination fields at top level."""
+        """GET tasks list returns data array with nested pagination object."""
         task = _make_task()
         mock_service.list_tasks = AsyncMock(return_value=([task], None, False, 1))
 
@@ -592,14 +652,15 @@ class TestListTasks:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data["items"]) == 1
-        assert data["items"][0]["task_id"] == "task-a1b2c3d4"
-        assert data["items"][0]["status"] == "completed"
-        assert data["items"][0]["caller"] == AGENT_ID
-        assert data["has_more"] is False
-        assert data["total_count"] == 1
-        assert data["limit"] == 20
-        assert data["cursor"] is None
+        assert len(data["data"]) == 1
+        assert data["data"][0]["task_id"] == "task-a1b2c3d4"
+        assert data["data"][0]["status"] == "completed"
+        assert data["data"][0]["caller"] == AGENT_ID
+        # Pagination is nested
+        assert data["pagination"]["has_more"] is False
+        assert data["pagination"]["total_count"] == 1
+        assert data["pagination"]["limit"] == 20
+        assert data["pagination"]["next_cursor"] is None
         assert "_links" in data
         assert "workflow" in data["_links"]
 
@@ -607,7 +668,7 @@ class TestListTasks:
     async def test_list_tasks_empty(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """GET tasks list with no tasks returns empty items."""
+        """GET tasks list with no tasks returns empty data array."""
         mock_service.list_tasks = AsyncMock(return_value=([], None, False, 0))
 
         transport = ASGITransport(app=app)
@@ -616,8 +677,8 @@ class TestListTasks:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["items"] == []
-        assert data["total_count"] == 0
+        assert data["data"] == []
+        assert data["pagination"]["total_count"] == 0
 
     @pytest.mark.asyncio
     async def test_list_tasks_filtered_by_status(
@@ -741,10 +802,10 @@ class TestListTasks:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["has_more"] is True
-        assert data["cursor"] is not None
-        assert data["total_count"] == 5
-        assert data["limit"] == 1
+        assert data["pagination"]["has_more"] is True
+        assert data["pagination"]["next_cursor"] is not None
+        assert data["pagination"]["total_count"] == 5
+        assert data["pagination"]["limit"] == 1
         assert "next" in data["_links"]
         assert "href" in data["_links"]["next"]
 
@@ -769,15 +830,15 @@ class TestListTasks:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data["items"]) == 1
-        assert data["items"][0]["task_id"] == "task-page2"
-        assert data["has_more"] is False
+        assert len(data["data"]) == 1
+        assert data["data"][0]["task_id"] == "task-page2"
+        assert data["pagination"]["has_more"] is False
 
     @pytest.mark.asyncio
     async def test_total_count_in_response(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Response always includes total_count at top level."""
+        """Response includes total_count in pagination object."""
         mock_service.list_tasks = AsyncMock(return_value=([], None, False, 42))
 
         transport = ASGITransport(app=app)
@@ -785,13 +846,13 @@ class TestListTasks:
             response = await client.get(f"/workflows/{WORKFLOW_ID}/tasks")
 
         data = response.json()
-        assert data["total_count"] == 42
+        assert data["pagination"]["total_count"] == 42
 
     @pytest.mark.asyncio
     async def test_custom_limit(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Custom limit is reflected in response."""
+        """Custom limit is reflected in pagination object."""
         mock_service.list_tasks = AsyncMock(return_value=([], None, False, 0))
 
         transport = ASGITransport(app=app)
@@ -802,7 +863,7 @@ class TestListTasks:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["limit"] == 50
+        assert data["pagination"]["limit"] == 50
 
     @pytest.mark.asyncio
     async def test_list_workflow_not_found(
@@ -855,6 +916,22 @@ class TestListTasks:
 
         links = response.json()["_links"]
         assert "next" not in links
+
+    @pytest.mark.asyncio
+    async def test_summary_items_have_stream_link(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """Each summary item in the list response includes a stream link."""
+        task = _make_task()
+        mock_service.list_tasks = AsyncMock(return_value=([task], None, False, 1))
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(f"/workflows/{WORKFLOW_ID}/tasks")
+
+        item = response.json()["data"][0]
+        assert "stream" in item["_links"]
+        assert item["_links"]["stream"]["href"].endswith("/stream")
 
 
 # ---------------------------------------------------------------------------
@@ -911,7 +988,7 @@ class TestResponseFieldNames:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(f"/workflows/{WORKFLOW_ID}/tasks")
 
-        item = response.json()["items"][0]
+        item = response.json()["data"][0]
         assert "caller" in item
         assert "principal_agent_id" not in item
 
@@ -932,7 +1009,7 @@ class TestResponseFieldNames:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(f"/workflows/{WORKFLOW_ID}/tasks")
 
-        item = response.json()["items"][0]
+        item = response.json()["data"][0]
         assert "input" not in item
         assert "result" not in item
 
@@ -952,7 +1029,7 @@ class TestResponseFieldNames:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(f"/workflows/{WORKFLOW_ID}/tasks")
 
-        item = response.json()["items"][0]
+        item = response.json()["data"][0]
         assert item["duration_seconds"] == 13
 
 
@@ -995,12 +1072,13 @@ class TestAuthRequired:
 
 
 class TestBuildTaskLinks:
-    def test_all_statuses_have_self_and_workflow(self) -> None:
-        """Every task status produces self and workflow links."""
+    def test_all_statuses_have_self_workflow_stream(self) -> None:
+        """Every task status produces self, workflow, and stream links."""
         for status in TaskStatus:
             links = build_task_links("task-1", "wf-1", status)
             assert "self" in links, f"Missing 'self' for {status.value}"
             assert "workflow" in links, f"Missing 'workflow' for {status.value}"
+            assert "stream" in links, f"Missing 'stream' for {status.value}"
 
     def test_link_paths_use_correct_format(self) -> None:
         """Links use /workflows/{id}/tasks/{id} format with href objects."""
@@ -1008,6 +1086,7 @@ class TestBuildTaskLinks:
         assert links["self"]["href"] == "/workflows/wf-xyz/tasks/task-abc"
         assert links["pause"]["href"] == "/workflows/wf-xyz/tasks/task-abc/pause"
         assert links["workflow"]["href"] == "/workflows/wf-xyz"
+        assert links["stream"]["href"] == "/workflows/wf-xyz/tasks/task-abc/stream"
 
     def test_all_links_are_href_objects(self) -> None:
         """Every link value is a dict with an 'href' key."""
@@ -1021,15 +1100,73 @@ class TestBuildTaskLinks:
                     f"Link '{link_name}' for {status.value} missing 'href'"
                 )
 
+    def test_action_links_have_method_post(self) -> None:
+        """All action links include method: POST."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.RUNNING)
+        for action in ("cancel", "pause", "context", "redirect"):
+            assert links[action]["method"] == "POST", (
+                f"Action link '{action}' should have method: POST"
+            )
+
+    def test_non_action_links_have_no_method(self) -> None:
+        """self, workflow, stream links do not include a method field."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.RUNNING)
+        for link_name in ("self", "workflow", "stream"):
+            assert "method" not in links[link_name], (
+                f"Non-action link '{link_name}' should not have 'method'"
+            )
+
     def test_rerun_points_to_workflow_run(self) -> None:
-        """Rerun link points to /workflows/{id}/run."""
+        """Rerun link points to /workflows/{id}/run with method: POST."""
         links = build_task_links("task-1", "wf-1", TaskStatus.COMPLETED)
         assert links["rerun"]["href"] == "/workflows/wf-1/run"
+        assert links["rerun"]["method"] == "POST"
 
-    def test_terminal_no_action_states_have_only_self_and_workflow(self) -> None:
-        """Cancelled, retasked, redirected have only self + workflow."""
-        for status in (TaskStatus.CANCELLED, TaskStatus.RETASKED, TaskStatus.REDIRECTED):
+    def test_accepted_action_links(self) -> None:
+        """Accepted status has exactly: cancel."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.ACCEPTED)
+        action_links = set(links.keys()) - UNIVERSAL_LINKS
+        assert action_links == {"cancel"}
+
+    def test_running_action_links(self) -> None:
+        """Running status has exactly: cancel, pause, context, redirect."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.RUNNING)
+        action_links = set(links.keys()) - UNIVERSAL_LINKS
+        assert action_links == {"cancel", "pause", "context", "redirect"}
+
+    def test_paused_action_links(self) -> None:
+        """Paused status has exactly: resume, cancel, context, redirect."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.PAUSED)
+        action_links = set(links.keys()) - UNIVERSAL_LINKS
+        assert action_links == {"resume", "cancel", "context", "redirect"}
+
+    def test_paused_resume_path(self) -> None:
+        """Paused resume link points to /tasks/{id}/resume, not /tasks/{id}."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.PAUSED)
+        assert links["resume"]["href"] == "/workflows/wf-1/tasks/task-1/resume"
+
+    def test_completed_action_links(self) -> None:
+        """Completed status has exactly: retask, rerun."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.COMPLETED)
+        action_links = set(links.keys()) - UNIVERSAL_LINKS
+        assert action_links == {"retask", "rerun"}
+
+    def test_failed_action_links(self) -> None:
+        """Failed status has exactly: retask, rerun."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.FAILED)
+        action_links = set(links.keys()) - UNIVERSAL_LINKS
+        assert action_links == {"retask", "rerun"}
+
+    def test_cancelled_action_links(self) -> None:
+        """Cancelled status has exactly: rerun."""
+        links = build_task_links("task-1", "wf-1", TaskStatus.CANCELLED)
+        action_links = set(links.keys()) - UNIVERSAL_LINKS
+        assert action_links == {"rerun"}
+
+    def test_terminal_no_action_states_have_only_universal_links(self) -> None:
+        """Retasked, redirected have only self + workflow + stream (no action links)."""
+        for status in (TaskStatus.RETASKED, TaskStatus.REDIRECTED):
             links = build_task_links("task-1", "wf-1", status)
-            assert set(links.keys()) == {"self", "workflow"}, (
-                f"{status.value} should only have self and workflow, got {set(links.keys())}"
+            assert set(links.keys()) == UNIVERSAL_LINKS, (
+                f"{status.value} should only have {UNIVERSAL_LINKS}, got {set(links.keys())}"
             )

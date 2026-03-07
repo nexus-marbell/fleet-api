@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jsonschema
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.agents.models import Agent, AgentStatus
@@ -31,21 +31,58 @@ IDEMPOTENCY_TTL_HOURS = 24
 
 
 # ---------------------------------------------------------------------------
-# HATEOAS link builder (shared with Issues #15, #16)
+# Status -> links reference table (RFC section 3.6)
+# ---------------------------------------------------------------------------
+#
+# Single source of truth for which action links appear per task status.
+# Every status also gets: self, workflow, stream (unconditionally).
+# Action links use {"method": "POST", "href": "..."} per RFC.
+#
+# Reference:
+#   accepted   -> cancel
+#   running    -> cancel, pause, context, redirect
+#   paused     -> resume, cancel, context, redirect
+#   completed  -> retask, rerun
+#   failed     -> retask, rerun
+#   cancelled  -> rerun
+#   retasked   -> (none)
+#   redirected -> (none)
+
+_STATUS_ACTION_LINKS: dict[TaskStatus, tuple[str, ...]] = {
+    TaskStatus.ACCEPTED: ("cancel",),
+    TaskStatus.RUNNING: ("cancel", "pause", "context", "redirect"),
+    TaskStatus.PAUSED: ("resume", "cancel", "context", "redirect"),
+    TaskStatus.COMPLETED: ("retask", "rerun"),
+    TaskStatus.FAILED: ("retask", "rerun"),
+    TaskStatus.CANCELLED: ("rerun",),
+    TaskStatus.RETASKED: (),
+    TaskStatus.REDIRECTED: (),
+}
+
+# Path suffix for each action link (relative to task base path).
+# "rerun" is special — it points to /workflows/{wf}/run, handled separately.
+_ACTION_LINK_SUFFIX: dict[str, str] = {
+    "cancel": "/cancel",
+    "pause": "/pause",
+    "resume": "/resume",
+    "context": "/context",
+    "redirect": "/redirect",
+    "retask": "/retask",
+    # "rerun" handled in build_task_links (different base path)
+}
+
+
+# ---------------------------------------------------------------------------
+# HATEOAS link builder (shared across task endpoints)
 # ---------------------------------------------------------------------------
 
 
 def build_task_links(task_id: str, workflow_id: str, status: TaskStatus | str) -> dict[str, Any]:
     """Build state-dependent HATEOAS links for a task (RFC section 3.6).
 
-    All links use {"href": "..."} format for HATEOAS compliance.
-    Status-dependent action links per spec:
-      - accepted: cancel
-      - running: cancel, pause, context, redirect
-      - paused: cancel, resume
-      - completed: retask, rerun
-      - failed: retask, rerun
-      - cancelled/retasked/redirected: no action links (self + workflow only)
+    Uses the _STATUS_ACTION_LINKS reference table as the single source of
+    truth. Non-action links (self, workflow, stream) are always present.
+    Action links include ``method: "POST"`` per RFC.
     """
     if not isinstance(status, TaskStatus):
         status = TaskStatus(status)
@@ -53,28 +90,16 @@ def build_task_links(task_id: str, workflow_id: str, status: TaskStatus | str) -
     base = f"/workflows/{workflow_id}/tasks/{task_id}"
     links: dict[str, Any] = {
         "self": {"href": base},
+        "workflow": {"href": f"/workflows/{workflow_id}"},
+        "stream": {"href": f"{base}/stream"},
     }
 
-    if status == TaskStatus.ACCEPTED:
-        links["cancel"] = {"href": f"{base}/cancel"}
+    for action in _STATUS_ACTION_LINKS.get(status, ()):
+        if action == "rerun":
+            links["rerun"] = {"method": "POST", "href": f"/workflows/{workflow_id}/run"}
+        else:
+            links[action] = {"method": "POST", "href": f"{base}{_ACTION_LINK_SUFFIX[action]}"}
 
-    elif status == TaskStatus.RUNNING:
-        links["cancel"] = {"href": f"{base}/cancel"}
-        links["pause"] = {"href": f"{base}/pause"}
-        links["context"] = {"href": f"{base}/context"}
-        links["redirect"] = {"href": f"{base}/redirect"}
-
-    elif status == TaskStatus.PAUSED:
-        links["cancel"] = {"href": f"{base}/cancel"}
-        links["resume"] = {"href": f"{base}/resume"}
-
-    elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-        links["retask"] = {"href": f"{base}/retask"}
-        links["rerun"] = {"href": f"/workflows/{workflow_id}/run"}
-
-    # cancelled, retasked, redirected: no action links
-
-    links["workflow"] = {"href": f"/workflows/{workflow_id}"}
     return links
 
 
@@ -123,6 +148,9 @@ def task_to_detail_response(task: Task) -> dict[str, Any]:
             task.metadata_.get("warnings", []) if task.metadata_ else []
         )
         if status == TaskStatus.COMPLETED:
+            # Intentional: quality defaults to all-true when metadata is absent.
+            # This is the happy-path assumption — callers that need to signal
+            # degraded quality must explicitly set quality flags in task metadata.
             response["quality"] = (
                 task.metadata_.get(
                     "quality",
@@ -164,6 +192,7 @@ def task_to_summary_response(task: Task) -> dict[str, Any]:
     base = f"/workflows/{task.workflow_id}/tasks/{task.id}"
     response["_links"] = {
         "self": {"href": base},
+        "stream": {"href": f"{base}/stream"},
     }
     return response
 
@@ -437,7 +466,7 @@ class TaskService:
         base_stmt = (
             select(Task)
             .where(Task.workflow_id == workflow_id)
-            .order_by(Task.created_at.desc())
+            .order_by(Task.created_at.desc(), Task.id.desc())
         )
 
         if status is not None:
@@ -492,10 +521,17 @@ class TaskService:
         count_stmt = select(func.count()).select_from(base_stmt.subquery())
         total_count = (await self.session.execute(count_stmt)).scalar_one()
 
+        # Apply cursor (created_at DESC ordering — cursor means "older than").
+        # Use (created_at, task_id) as tiebreaker for tasks with identical
+        # created_at timestamps.
         stmt = base_stmt
         if cursor is not None:
-            _cursor_task_id, cursor_created_at = decode_task_cursor(cursor)
-            stmt = stmt.where(Task.created_at < cursor_created_at)
+            cursor_task_id, cursor_created_at = decode_task_cursor(cursor)
+            stmt = stmt.where(
+                tuple_(Task.created_at, Task.id) < tuple_(
+                    literal(cursor_created_at), literal(cursor_task_id)
+                )
+            )
 
         stmt = stmt.limit(limit + 1)
         result = await self.session.execute(stmt)
