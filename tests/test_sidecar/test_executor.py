@@ -33,21 +33,13 @@ class TestLocalExecutor:
 
     async def test_executes_subprocess_with_json_stdin(self) -> None:
         """Handler receives task input as JSON on stdin."""
-        # Use python -c to echo back stdin.
-        executor = LocalExecutor(
-            handler_command=sys.executable,
-        )
-        # The "handler" reads stdin, emits one event, exits 0.
         script = (
             "import sys, json; "
             "data = json.load(sys.stdin); "
             "print(json.dumps({'event_type': 'log', 'data': {'received': data['task_id']}}))"
         )
-        executor._handler_command = sys.executable
-
         task = _make_task()
 
-        # We need a custom approach: override the command to run python -c script
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-c", script,
             stdin=asyncio.subprocess.PIPE,
@@ -66,22 +58,6 @@ class TestLocalExecutor:
 
     async def test_parses_stdout_json_events(self) -> None:
         """Each stdout line is parsed as a TaskEvent."""
-        # Handler emits two events.
-        script = (
-            "import json, sys; "
-            "sys.stdin.read(); "  # consume stdin
-            "print(json.dumps({'event_type': 'progress', 'data': {'pct': 50}})); "
-            "print(json.dumps({'event_type': 'completed', 'data': {'result': 'ok'}}))"
-        )
-        executor = LocalExecutor(handler_command=f"{sys.executable}")
-
-        # Monkey-patch to use the script.
-        original_cmd = executor._handler_command
-        executor._handler_command = sys.executable
-
-        # We'll directly test _read_events by running the full execute.
-        # But execute calls create_subprocess_exec with handler_command as the
-        # sole arg.  We need to pass -c script.  So let's create a temp script file.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(
                 "import json, sys\n"
@@ -90,13 +66,6 @@ class TestLocalExecutor:
                 "print(json.dumps({'event_type': 'completed', 'data': {'result': 'ok'}}))\n"
             )
             script_path = f.name
-
-        executor._handler_command = f"{sys.executable} {script_path}"
-
-        # executor.execute uses create_subprocess_exec which wants separate args.
-        # Let's use a wrapper script approach instead by overriding the handler.
-        # Actually, let's just test via subprocess directly for correctness.
-        task = _make_task()
 
         process = await asyncio.create_subprocess_exec(
             sys.executable, script_path,
@@ -126,11 +95,6 @@ class TestLocalExecutor:
             )
             script_path = f.name
 
-        executor = LocalExecutor(handler_command=script_path)
-        # Override to use python interpreter.
-        executor._handler_command = sys.executable
-
-        # Direct subprocess test.
         process = await asyncio.create_subprocess_exec(
             sys.executable, script_path,
             stdin=asyncio.subprocess.PIPE,
@@ -151,9 +115,6 @@ class TestLocalExecutor:
                 "time.sleep(60)\n"  # hangs forever
             )
             script_path = f.name
-
-        # Use a 1-second timeout.
-        task = _make_task(timeout_seconds=1)
 
         process = await asyncio.create_subprocess_exec(
             sys.executable, script_path,
