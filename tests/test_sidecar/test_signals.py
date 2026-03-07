@@ -1,6 +1,6 @@
-"""Tests for fleet_agent.signals — signal polling, delivery, and acknowledgement.
+"""Tests for fleet_agent.signals -- signal polling, delivery, and acknowledgement.
 
-Covers RFC 1 §7.2 items 5-7: context injection forwarding, pause/resume/cancel
+Covers RFC 1 Section 7.2 items 5-7: context injection forwarding, pause/resume/cancel
 signal polling, redirect signal handling.
 """
 
@@ -62,7 +62,7 @@ def streamer(private_key: Ed25519PrivateKey) -> EventStreamer:
 # ---------------------------------------------------------------------------
 
 class TestSignalPolling:
-    """Signal poll → receive → deliver → acknowledge lifecycle."""
+    """Signal poll -> receive -> deliver -> acknowledge lifecycle."""
 
     async def test_polls_correct_url_with_auth(
         self, signal_poller: SignalPoller
@@ -171,7 +171,6 @@ class TestPauseSignal:
         signal_poller.register_task("task-1")
         assert not signal_poller.is_paused("task-1")
 
-        # Simulate pause signal handling.
         mock_streamer = MagicMock(spec=EventStreamer)
         mock_streamer.stream = AsyncMock()
 
@@ -204,7 +203,7 @@ class TestPauseSignal:
         await signal_poller._handle_pause("task-1", mock_streamer)
         await signal_poller._handle_pause("task-1", mock_streamer)
 
-        # Only one stream call — second pause was ignored.
+        # Only one stream call -- second pause was ignored.
         assert mock_streamer.stream.call_count == 1
 
 
@@ -250,7 +249,7 @@ class TestResumeSignal:
         mock_streamer = MagicMock(spec=EventStreamer)
         mock_streamer.stream = AsyncMock()
 
-        # Task starts in running state — resume should be ignored.
+        # Task starts in running state -- resume should be ignored.
         await signal_poller._handle_resume("task-1", mock_streamer)
 
         mock_streamer.stream.assert_not_called()
@@ -366,15 +365,17 @@ class TestRedirectSignal:
 # ---------------------------------------------------------------------------
 
 class TestContextInjection:
-    """Context injection: received, delivered to executor, event streamed."""
+    """Context injection: received, delivered to executor queue. No ack stream.
+
+    The executor is the single source of truth for context_injected events
+    (PR #47 fix: signal poller no longer double-streams ack events).
+    """
 
     async def test_context_queued_for_delivery(
         self, signal_poller: SignalPoller
     ) -> None:
         """Context injection payload is queued for the executor to pick up."""
         signal_poller.register_task("task-1")
-        mock_streamer = MagicMock(spec=EventStreamer)
-        mock_streamer.stream = AsyncMock()
 
         context_payload = {
             "context_type": "additional_input",
@@ -383,44 +384,47 @@ class TestContextInjection:
             "urgency": "normal",
         }
 
-        await signal_poller._handle_context_injection(
-            "task-1", context_payload, mock_streamer
-        )
+        signal_poller._handle_context_injection("task-1", context_payload)
 
         contexts = signal_poller.pop_context("task-1")
         assert len(contexts) == 1
         assert contexts[0]["context_type"] == "additional_input"
         assert contexts[0]["context_sequence"] == 1
 
-    async def test_context_streams_ack_event(
+    async def test_context_does_not_stream_ack(
         self, signal_poller: SignalPoller
     ) -> None:
-        """Context injection streams a context_injected event back."""
+        """Context injection does NOT stream an ack event (executor handles it).
+
+        This is the fix for the double-stream bug: the signal poller queues
+        the context, and the executor emits the context_injected event when
+        it actually processes it.
+        """
         signal_poller.register_task("task-1")
         mock_streamer = MagicMock(spec=EventStreamer)
         mock_streamer.stream = AsyncMock()
 
-        await signal_poller._handle_context_injection(
-            "task-1",
-            {"context_type": "correction", "context_sequence": 1, "payload": {}},
-            mock_streamer,
+        sig = Signal(
+            task_id="task-1",
+            signal_type="context_injection",
+            timestamp="2026-03-07T12:00:00Z",
+            payload={"context_type": "correction", "context_sequence": 1, "payload": {}},
         )
+        await signal_poller._handle_signal(sig, mock_streamer)
 
-        mock_streamer.stream.assert_called_once()
+        # Signal poller should NOT have streamed anything for context injection.
+        mock_streamer.stream.assert_not_called()
 
     async def test_pop_context_clears_queue(
         self, signal_poller: SignalPoller
     ) -> None:
         """pop_context() returns and clears all pending contexts."""
         signal_poller.register_task("task-1")
-        mock_streamer = MagicMock(spec=EventStreamer)
-        mock_streamer.stream = AsyncMock()
 
         for i in range(3):
-            await signal_poller._handle_context_injection(
+            signal_poller._handle_context_injection(
                 "task-1",
                 {"context_type": "additional_input", "context_sequence": i + 1, "payload": {}},
-                mock_streamer,
             )
 
         contexts = signal_poller.pop_context("task-1")
@@ -434,17 +438,13 @@ class TestContextInjection:
         self, signal_poller: SignalPoller
     ) -> None:
         """Context for an unregistered task is silently ignored."""
-        mock_streamer = MagicMock(spec=EventStreamer)
-        mock_streamer.stream = AsyncMock()
-
-        # No task registered — should not raise.
-        await signal_poller._handle_context_injection(
+        # No task registered -- should not raise.
+        signal_poller._handle_context_injection(
             "no-such-task",
             {"context_type": "correction", "context_sequence": 1, "payload": {}},
-            mock_streamer,
         )
 
-        mock_streamer.stream.assert_not_called()
+        # No crash, context is silently dropped.
 
 
 # ---------------------------------------------------------------------------
@@ -504,14 +504,11 @@ class TestSignalOrdering:
     ) -> None:
         """Multiple context injections are queued in order."""
         signal_poller.register_task("task-1")
-        mock_streamer = MagicMock(spec=EventStreamer)
-        mock_streamer.stream = AsyncMock()
 
         for i in range(1, 4):
-            await signal_poller._handle_context_injection(
+            signal_poller._handle_context_injection(
                 "task-1",
                 {"context_type": "additional_input", "context_sequence": i, "payload": {}},
-                mock_streamer,
             )
 
         contexts = signal_poller.pop_context("task-1")
@@ -622,11 +619,11 @@ class TestDeduplication:
         # Process the signal twice.
         sig_key = f"{sig.task_id}:{sig.signal_type}:{sig.timestamp}"
         await signal_poller._handle_signal(sig, mock_streamer)
-        signal_poller._processed_signals.add(sig_key)
+        signal_poller.mark_signal_processed(sig_key)
 
         # Second invocation would be skipped by the run loop's dedup check.
         # Verify the signal was processed.
-        assert sig_key in signal_poller._processed_signals
+        assert signal_poller.is_signal_processed(sig_key)
 
 
 # ---------------------------------------------------------------------------
@@ -640,9 +637,7 @@ class TestTaskLifecycle:
         """register_task creates all shared state entries."""
         signal_poller.register_task("task-1")
 
-        assert "task-1" in signal_poller._pause_events
-        assert "task-1" in signal_poller._cancel_flags
-        assert "task-1" in signal_poller._context_queue
+        assert signal_poller.has_task("task-1")
         assert not signal_poller.is_paused("task-1")
         assert not signal_poller.is_cancelled("task-1")
 
@@ -651,15 +646,42 @@ class TestTaskLifecycle:
         signal_poller.register_task("task-1")
         signal_poller.unregister_task("task-1")
 
-        assert "task-1" not in signal_poller._pause_events
-        assert "task-1" not in signal_poller._cancel_flags
-        assert "task-1" not in signal_poller._context_queue
+        assert not signal_poller.has_task("task-1")
 
     def test_unregister_nonexistent_task_safe(
         self, signal_poller: SignalPoller
     ) -> None:
         """Unregistering a task that was never registered doesn't raise."""
         signal_poller.unregister_task("no-such-task")  # Should not raise
+
+    def test_unregister_prunes_processed_signals(
+        self, signal_poller: SignalPoller
+    ) -> None:
+        """unregister_task prunes _processed_signals entries for that task.
+
+        This is the fix for the memory leak (Blocker 4): signal keys matching
+        the unregistered task_id prefix are removed on cleanup.
+        """
+        signal_poller.register_task("task-1")
+        signal_poller.register_task("task-2")
+
+        # Simulate processed signals for both tasks.
+        signal_poller.mark_signal_processed("task-1:pause_requested:2026-03-07T12:00:00Z")
+        signal_poller.mark_signal_processed("task-1:resume_requested:2026-03-07T12:00:05Z")
+        signal_poller.mark_signal_processed("task-2:cancel_requested:2026-03-07T12:01:00Z")
+
+        assert len(signal_poller._processed_signals) == 3
+
+        # Unregister task-1 -- should prune its entries but keep task-2's.
+        signal_poller.unregister_task("task-1")
+
+        assert len(signal_poller._processed_signals) == 1
+        assert signal_poller.is_signal_processed(
+            "task-2:cancel_requested:2026-03-07T12:01:00Z"
+        )
+        assert not signal_poller.is_signal_processed(
+            "task-1:pause_requested:2026-03-07T12:00:00Z"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +712,7 @@ class TestWaitIfPaused:
 
         await signal_poller._handle_pause("task-1", mock_streamer)
 
-        # Should block — use a short timeout to verify.
+        # Should block -- use a short timeout to verify.
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(
                 signal_poller.wait_if_paused("task-1"), timeout=0.05
@@ -727,7 +749,7 @@ class TestWaitIfPaused:
 
 
 # ---------------------------------------------------------------------------
-# Test: Integration — signal polling concurrent with task execution
+# Test: Integration -- signal polling concurrent with task execution
 # ---------------------------------------------------------------------------
 
 class TestIntegrationConcurrency:
