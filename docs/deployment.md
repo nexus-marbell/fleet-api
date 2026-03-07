@@ -40,7 +40,7 @@ Dokploy deploys each component as a separate service using its Dockerfile. This 
 |---------|-------|
 | Source | `Dockerfile.api` from repo root |
 | Port | 8000 |
-| Health check | `GET /` returns manifest (200 OK) |
+| Health check | `GET /` returns `{"status": "ok"}` (200 OK) |
 | Traefik | TLS termination, route to fleet-api subdomain |
 
 **Environment variables:**
@@ -121,15 +121,16 @@ For local development, use docker-compose:
 docker compose up
 ```
 
-The `docker-compose.yml` in the repo root starts the API, an example sidecar, and a PostgreSQL instance. This is for **local development only** — production uses Dokploy's per-service deployment.
+The `docker-compose.yml` in the repo root starts the API, an example sidecar, and a PostgreSQL instance. This is for **local development only** — production uses Dokploy's per-service deployment. Note: the sidecar key volume is commented out by default. Generate a key pair (see [Key Generation](#key-generation)) and uncomment the volume mount before starting.
 
 ## Monitoring
 
 | Check | Endpoint | Expected |
 |-------|----------|----------|
-| API health | `GET /` | 200 with manifest JSON |
+| API health | `GET /` | 200 with `{"status": "ok"}` |
+| API manifest | `GET /manifest` | 200 with endpoint registry and capabilities |
 | Agent health | `GET /fleet/health` on sidecar port | 200 with agent status |
 | Heartbeat timeout | Automatic | Agents marked `UNREACHABLE` after 90s silence |
-| Workflow status | `GET /workflows/{id}` | `executor_status` field shows owning agent's health |
+| Workflow status | `GET /workflows/{id}` | `executor_status`: `active`, `registered`, `unreachable`, `suspended`, or `null` (agent deleted) |
 
 The heartbeat monitor runs inside the API server. If an agent's sidecar stops sending heartbeats for 90 seconds, the agent's status transitions to `UNREACHABLE`. The sidecar's heartbeat re-activates the agent automatically when it resumes.
