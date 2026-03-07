@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # TODO(#7): Add services block with postgres:16-alpine when DB tests land
     steps:
       - uses: actions/checkout@v4
 
