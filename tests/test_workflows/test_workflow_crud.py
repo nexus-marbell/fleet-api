@@ -346,7 +346,7 @@ class TestGetWorkflow:
     ) -> None:
         """GET /workflows/{id} returns workflow details with _links."""
         mock_wf = _make_workflow()
-        mock_service.get_workflow = AsyncMock(return_value=(mock_wf, "active"))
+        mock_service.get_workflow_with_executor_status = AsyncMock(return_value=(mock_wf, "active"))
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -369,7 +369,7 @@ class TestGetWorkflow:
         """GET /workflows/{id} for nonexistent workflow returns 404."""
         from fleet_api.errors import ErrorCode, NotFoundError
 
-        mock_service.get_workflow = AsyncMock(
+        mock_service.get_workflow_with_executor_status = AsyncMock(
             side_effect=NotFoundError(
                 code=ErrorCode.WORKFLOW_NOT_FOUND,
                 message="Workflow 'wf-ghost' not found.",
@@ -390,7 +390,7 @@ class TestGetWorkflow:
     ) -> None:
         """GET /workflows/{id} shows executor_status=null when agent deleted."""
         mock_wf = _make_workflow()
-        mock_service.get_workflow = AsyncMock(return_value=(mock_wf, None))
+        mock_service.get_workflow_with_executor_status = AsyncMock(return_value=(mock_wf, None))
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -774,7 +774,7 @@ class TestExecutorStatus:
         """GET /workflows/{id} returns executor_status='active'."""
         mock_svc = MagicMock()
         wf = _make_workflow()
-        mock_svc.get_workflow = AsyncMock(return_value=(wf, "active"))
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "active"))
         app = _create_test_app(mock_svc)
 
         transport = ASGITransport(app=app)
@@ -790,7 +790,7 @@ class TestExecutorStatus:
         """GET /workflows/{id} returns executor_status='unreachable'."""
         mock_svc = MagicMock()
         wf = _make_workflow()
-        mock_svc.get_workflow = AsyncMock(return_value=(wf, "unreachable"))
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "unreachable"))
         app = _create_test_app(mock_svc)
 
         transport = ASGITransport(app=app)
@@ -806,7 +806,7 @@ class TestExecutorStatus:
         """GET /workflows/{id} returns executor_status='registered'."""
         mock_svc = MagicMock()
         wf = _make_workflow()
-        mock_svc.get_workflow = AsyncMock(return_value=(wf, "registered"))
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "registered"))
         app = _create_test_app(mock_svc)
 
         transport = ASGITransport(app=app)
@@ -822,7 +822,7 @@ class TestExecutorStatus:
         """GET /workflows/{id} returns executor_status=null when agent deleted."""
         mock_svc = MagicMock()
         wf = _make_workflow()
-        mock_svc.get_workflow = AsyncMock(return_value=(wf, None))
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, None))
         app = _create_test_app(mock_svc)
 
         transport = ASGITransport(app=app)
@@ -865,7 +865,7 @@ class TestExecutorStatus:
         """executor_status appears in the response dict (position check)."""
         mock_svc = MagicMock()
         wf = _make_workflow()
-        mock_svc.get_workflow = AsyncMock(return_value=(wf, "active"))
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "active"))
         app = _create_test_app(mock_svc)
 
         transport = ASGITransport(app=app)

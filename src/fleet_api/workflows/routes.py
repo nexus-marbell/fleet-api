@@ -215,9 +215,7 @@ async def get_workflow(
     """Get a single workflow by ID."""
     if agent is None:
         raise RuntimeError("require_auth dependency returned None on a protected route")
-    workflow, executor_status = await service.get_workflow(  # type: ignore[misc]
-        workflow_id, include_agent_status=True
-    )
+    workflow, executor_status = await service.get_workflow_with_executor_status(workflow_id)
     return _workflow_to_response(workflow, executor_status=executor_status)
 
 

@@ -154,43 +154,52 @@ class WorkflowService:
         await self.session.refresh(workflow)
         return workflow
 
-    async def get_workflow(
-        self, workflow_id: str, *, include_agent_status: bool = False
-    ) -> Workflow | tuple[Workflow, str | None]:
-        """Get a single workflow by ID. Raises NotFoundError if not found.
-
-        When *include_agent_status* is True the return value is a
-        ``(workflow, agent_status_str | None)`` tuple where *agent_status_str*
-        is the owning agent's current status (e.g. ``"active"``, ``"unreachable"``).
-        """
-        if include_agent_status:
-            stmt = (
-                select(Workflow, Agent.status.label("agent_status"))
-                .outerjoin(Agent, Workflow.owner_agent_id == Agent.id)
-                .where(Workflow.id == workflow_id)
-            )
-            row = (await self.session.execute(stmt)).one_or_none()
-            if row is None:
-                raise NotFoundError(
-                    code=ErrorCode.WORKFLOW_NOT_FOUND,
-                    message=f"Workflow '{workflow_id}' not found.",
-                    suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
-                    links={"list": {"href": "/workflows"}},
-                )
-            workflow = row[0]
-            agent_status = row[1]
-            status_str = agent_status.value if agent_status is not None else None
-            return workflow, status_str
-
+    async def get_workflow(self, workflow_id: str) -> Workflow:
+        """Get a single workflow by ID. Raises NotFoundError if not found."""
         workflow = await self.session.get(Workflow, workflow_id)
         if workflow is None:
             raise NotFoundError(
                 code=ErrorCode.WORKFLOW_NOT_FOUND,
                 message=f"Workflow '{workflow_id}' not found.",
-                suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+                suggestion=(
+                    "Check the workflow ID."
+                    " Use GET /workflows to list available workflows."
+                ),
                 links={"list": {"href": "/workflows"}},
             )
         return workflow
+
+    async def get_workflow_with_executor_status(
+        self, workflow_id: str
+    ) -> tuple[Workflow, str | None]:
+        """Get a workflow annotated with its owning agent's current status.
+
+        Returns ``(workflow, executor_status_str | None)`` where
+        *executor_status_str* is the agent's current status (e.g.
+        ``"active"``, ``"unreachable"``), or ``None`` when the agent no
+        longer exists in the agents table.  Raises NotFoundError if the
+        workflow itself is not found.
+        """
+        stmt = (
+            select(Workflow, Agent.status.label("agent_status"))
+            .outerjoin(Agent, Workflow.owner_agent_id == Agent.id)
+            .where(Workflow.id == workflow_id)
+        )
+        row = (await self.session.execute(stmt)).one_or_none()
+        if row is None:
+            raise NotFoundError(
+                code=ErrorCode.WORKFLOW_NOT_FOUND,
+                message=f"Workflow '{workflow_id}' not found.",
+                suggestion=(
+                    "Check the workflow ID."
+                    " Use GET /workflows to list available workflows."
+                ),
+                links={"list": {"href": "/workflows"}},
+            )
+        workflow: Workflow = row[0]
+        agent_status = row[1]
+        status_str = agent_status.value if agent_status is not None else None
+        return workflow, status_str
 
     async def list_workflows(
         self,
