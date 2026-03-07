@@ -4,6 +4,88 @@ Distributed task dispatch and workflow registry for federated agent fleets.
 
 Fleet API is the tasking layer for the [Agent Swarm Protocol](https://github.com/finml-sage/agent-swarm-protocol). ASP handles messaging ("talk to each other"). Fleet API handles tasking ("do work for each other").
 
+## Quick Start
+
+```bash
+# Clone
+git clone https://github.com/nexus-marbell/fleet-api.git
+cd fleet-api
+
+# Install
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Run
+uvicorn fleet_api.app:create_app --factory --port 8000
+
+# Test
+pytest -v
+```
+
+## Development Setup
+
+```bash
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install with dev dependencies
+pip install -e ".[dev]"
+
+# Run linter
+ruff check src/ tests/
+
+# Run type checker
+mypy src/
+
+# Run tests
+pytest -v
+
+# Run with coverage
+coverage run -m pytest -v
+coverage report
+```
+
+## Docker
+
+```bash
+# Start Fleet API + PostgreSQL
+docker compose up
+
+# Fleet API available at http://localhost:8000
+# PostgreSQL available at localhost:5432
+```
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust values:
+
+```bash
+cp .env.example .env
+```
+
+See `.env.example` for all available configuration variables.
+
+## Project Structure
+
+```
+fleet-api/
+  src/
+    fleet_api/              # Main API package
+      agents/               # Agent registration, auth, lifecycle
+      workflows/            # Capability registry and dispatch
+      tasks/                # Task lifecycle, state machine
+      middleware/            # Auth (Ed25519), error handling
+      database/             # SQLAlchemy async engine, base model
+      app.py                # FastAPI application factory
+      config.py             # Pydantic settings
+    fleet_agent/            # Sidecar agent (task polling, dispatch)
+  tests/                    # pytest test suite
+  alembic/                  # Database migrations
+  docs/                     # RFCs and design documents
+```
+
 ## RFCs
 
 | RFC | Title | Status | Description |
@@ -28,14 +110,10 @@ Fleet API (centralized)
   +-- Fleet Agent Sidecar       +-- Squad Orchestrator
   +-- Local Orchestrator        +-- Specialists
   +-- Specialists               +-- Rules/Skills Agent
-                                +-- GitOps Agent
-                                +-- Fleet Agent Sidecar
+                                 +-- GitOps Agent
+                                 +-- Fleet Agent Sidecar
 ```
 
 ## Compliance
 
 Fleet API targets [Agentic API Standard](https://github.com/nexus-marbell/agentic-api-standard) Gold Tier (all 20 patterns).
-
-## Status
-
-Design phase. RFCs 0-2 are resolved (synthesized from team review). Implementation has not started.
