@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 import uvicorn
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from fleet_agent.config import SidecarConfig
@@ -30,10 +31,14 @@ logging.basicConfig(
 logger = logging.getLogger("fleet_agent")
 
 
-def _load_private_key(path: str):  # type: ignore[no-untyped-def]
+def _load_private_key(path: str) -> Ed25519PrivateKey:
     """Load an Ed25519 private key from a PEM file."""
     with open(path, "rb") as fh:
         key = load_pem_private_key(fh.read(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise TypeError(
+            f"Expected Ed25519 private key, got {type(key).__name__}"
+        )
     return key
 
 

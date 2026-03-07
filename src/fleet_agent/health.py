@@ -11,6 +11,7 @@ import time
 import httpx
 from fastapi import FastAPI
 
+from fleet_agent.models import HealthStatus
 from fleet_agent.poller import TaskPoller
 
 _app = FastAPI(title="Fleet Agent Sidecar Health")
@@ -37,7 +38,7 @@ def get_app() -> FastAPI:
 
 
 @_app.get("/fleet/health")
-async def health() -> dict:  # type: ignore[type-arg]
+async def health() -> HealthStatus:
     """Return sidecar health status."""
     fleet_reachable = await _check_fleet_api()
     poller_running = _poller.is_running if _poller else False
@@ -46,15 +47,15 @@ async def health() -> dict:  # type: ignore[type-arg]
 
     status = "healthy" if (poller_running and fleet_reachable) else "unhealthy"
 
-    return {
-        "status": status,
-        "agent_id": _agent_id,
-        "fleet_api_url": _fleet_api_url,
-        "fleet_api_reachable": fleet_reachable,
-        "poller_running": poller_running,
-        "active_tasks": active_tasks,
-        "uptime_seconds": int(uptime),
-    }
+    return HealthStatus(
+        status=status,
+        agent_id=_agent_id,
+        fleet_api_url=_fleet_api_url,
+        fleet_api_reachable=fleet_reachable,
+        poller_running=poller_running,
+        active_tasks=active_tasks,
+        uptime_seconds=int(uptime),
+    )
 
 
 async def _check_fleet_api() -> bool:
