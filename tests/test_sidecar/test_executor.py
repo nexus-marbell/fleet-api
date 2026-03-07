@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import tempfile
 
 import pytest
 
@@ -80,8 +82,6 @@ class TestLocalExecutor:
         # We'll directly test _read_events by running the full execute.
         # But execute calls create_subprocess_exec with handler_command as the
         # sole arg.  We need to pass -c script.  So let's create a temp script file.
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(
                 "import json, sys\n"
