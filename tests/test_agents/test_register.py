@@ -17,7 +17,6 @@ from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import get_agent_lookup
 from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

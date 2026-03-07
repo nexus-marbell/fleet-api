@@ -20,7 +20,6 @@ from fleet_api.middleware.auth import get_agent_lookup
 from tests.auth_helpers import sign_request
 from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
-
 # ---------------------------------------------------------------------------
 # Mock lookup that knows about our test agents
 # ---------------------------------------------------------------------------

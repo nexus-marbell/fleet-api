@@ -11,7 +11,6 @@ from fleet_api.agents.models import AgentStatus
 from fleet_api.agents.service import AgentService, DatabaseAgentLookup
 from tests.test_agents.conftest import generate_keypair, make_fake_agent
 
-
 # ---------------------------------------------------------------------------
 # AgentService tests
 # ---------------------------------------------------------------------------
