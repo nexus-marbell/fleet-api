@@ -1,6 +1,8 @@
 services:
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     ports:
       - "8000:8000"
     environment:
@@ -14,6 +16,22 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  sidecar-example:
+    build:
+      context: .
+      dockerfile: Dockerfile.sidecar
+    environment:
+      FLEET_API_URL: http://api:8000
+      FLEET_AGENT_ID: example-agent
+      FLEET_AGENT_PRIVATE_KEY_PATH: /keys/agent.pem
+      FLEET_EXECUTOR_COMMAND: "echo task-handler-placeholder"
+      FLEET_HEARTBEAT_INTERVAL: "30"
+    depends_on:
+      api:
+        condition: service_healthy
+    # volumes:
+    #   - ./keys/example-agent.pem:/keys/agent.pem:ro
 
   db:
     image: postgres:16-alpine

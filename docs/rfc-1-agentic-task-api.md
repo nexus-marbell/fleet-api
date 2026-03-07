@@ -1747,8 +1747,8 @@ The `POST /agents/{id}/heartbeat` endpoint uses the same Ed25519 auth middleware
 
 ```
 fleet-api/
-  Dockerfile                  # Single-stage Python build
-  docker-compose.yml          # Local dev only (Dokploy uses Dockerfile)
+  Dockerfile.api              # Single-stage Python build
+  docker-compose.yml          # Local dev only (Dokploy uses Dockerfile.api)
   pyproject.toml              # Dependencies and project metadata
   src/
     fleet_api/
@@ -1807,7 +1807,7 @@ fleet-api/
 The `fleet-api` repo connects to Dokploy on the central VM. Every push to `main` triggers:
 
 1. Dokploy detects the push (webhook)
-2. Builds the Docker image from `Dockerfile`
+2. Builds the Docker image from `Dockerfile.api`
 3. Deploys behind Traefik reverse proxy
 4. Traefik handles TLS termination and routing
 
