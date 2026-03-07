@@ -10,6 +10,7 @@ because the sidecar only knows task_id, not the workflow.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Query
@@ -17,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fleet_api.config import settings
 from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
 from fleet_api.tasks.models import Task
@@ -26,7 +28,9 @@ from fleet_api.tasks.service import (
     build_task_links,
     cancel_task,
     count_context_injections,
+    pause_task,
     process_sidecar_event,
+    resume_task,
     retask_task,
     task_to_detail_response,
     task_to_summary_response,
@@ -82,6 +86,18 @@ class TaskRetaskRequest(BaseModel):
 
     refinement: RetaskRefinement
     priority: str | None = None
+
+
+class TaskPauseRequest(BaseModel):
+    """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/pause."""
+
+    reason: str | None = None
+
+
+class TaskResumeRequest(BaseModel):
+    """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/resume."""
+
+    priority: str | None = Field(None, description="Priority override: low, normal, high, critical")
 
 
 class TaskEventRequest(BaseModel):
@@ -383,6 +399,104 @@ async def retask_task_endpoint(
     }
 
     return JSONResponse(status_code=201, content=response_data)
+
+
+# ---------------------------------------------------------------------------
+# POST /workflows/{workflow_id}/tasks/{task_id}/pause — Phase 2 Unit 2+3
+# ---------------------------------------------------------------------------
+
+
+@router.post("/workflows/{workflow_id}/tasks/{task_id}/pause")
+async def pause_task_endpoint(
+    workflow_id: str,
+    task_id: str,
+    body: TaskPauseRequest | None = None,
+    agent: AuthenticatedAgent = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Pause a running task. Caller must be the task principal or workflow owner."""
+    reason = body.reason if body is not None else None
+
+    task, event = await pause_task(
+        session=session,
+        workflow_id=workflow_id,
+        task_id=task_id,
+        paused_by=agent.agent_id,
+        reason=reason,
+    )
+
+    return _pause_response(task, event)
+
+
+def _pause_response(task: Task, event: Any) -> dict[str, Any]:
+    """Build the RFC §3.11 pause response."""
+    pause_ttl = settings.fleet_pause_ttl_seconds
+    paused_at = task.paused_at
+    expires_at = paused_at + timedelta(seconds=pause_ttl) if paused_at else None
+
+    progress = task.metadata_.get("progress", 0) if task.metadata_ else 0
+    progress_message = task.metadata_.get("progress_message") if task.metadata_ else None
+
+    paused_state = {
+        "progress": progress,
+        "message": progress_message,
+        "resumable": True,
+        "state_ttl_seconds": pause_ttl,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
+
+    return {
+        "task_id": task.id,
+        "workflow_id": task.workflow_id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "paused_at": paused_at.isoformat() if paused_at else None,
+        "paused_state": paused_state,
+        "_links": build_task_links(task.id, task.workflow_id, task.status),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /workflows/{workflow_id}/tasks/{task_id}/resume — Phase 2 Unit 2+3
+# ---------------------------------------------------------------------------
+
+
+@router.post("/workflows/{workflow_id}/tasks/{task_id}/resume")
+async def resume_task_endpoint(
+    workflow_id: str,
+    task_id: str,
+    body: TaskResumeRequest | None = None,
+    agent: AuthenticatedAgent = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Resume a paused task. Caller must be the task principal or workflow owner."""
+    priority = body.priority if body is not None else None
+
+    task, event = await resume_task(
+        session=session,
+        workflow_id=workflow_id,
+        task_id=task_id,
+        resumed_by=agent.agent_id,
+        priority=priority,
+    )
+
+    return _resume_response(task, event)
+
+
+def _resume_response(task: Task, event: Any) -> dict[str, Any]:
+    """Build the RFC §3.12 resume response."""
+    paused_duration_seconds = event.data.get("paused_duration_seconds", 0) if event.data else 0
+    progress = task.metadata_.get("progress", 0) if task.metadata_ else 0
+
+    return {
+        "task_id": task.id,
+        "workflow_id": task.workflow_id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "resumed_at": event.created_at.isoformat() if event.created_at else None,
+        "paused_duration_seconds": paused_duration_seconds,
+        "progress": progress,
+        "_links": build_task_links(task.id, task.workflow_id, task.status),
+    }
+
 
 
 # ---------------------------------------------------------------------------
