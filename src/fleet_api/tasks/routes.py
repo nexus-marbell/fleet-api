@@ -55,7 +55,7 @@ class TaskRunRequest(BaseModel):
     metadata: dict[str, Any] | None = Field(None, description="Arbitrary metadata")
     callback_url: str | None = Field(
         None,
-        description="Webhook URL for result delivery — delivery in Phase 2",
+        description="Webhook URL for signed result delivery on task completion or failure",
     )
 
 

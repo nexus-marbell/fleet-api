@@ -37,7 +37,6 @@ from fleet_api.tasks.callbacks import (
 from fleet_api.tasks.models import Task, TaskPriority, TaskStatus
 from fleet_api.tasks.routes import get_task_service
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -447,6 +446,136 @@ class TestCallbackUrlWiring:
 
         call_kwargs = mock_service.create_task.call_args
         assert call_kwargs.kwargs["callback_url"] is None
+
+
+# ---------------------------------------------------------------------------
+# Integration: process_sidecar_event → schedule_callback wiring
+# ---------------------------------------------------------------------------
+
+
+class TestProcessSidecarEventCallbackWiring:
+    """Verifies the glue in service.py that calls schedule_callback on terminal events."""
+
+    @pytest.mark.asyncio
+    async def test_completed_event_triggers_schedule_callback(self) -> None:
+        """process_sidecar_event with 'completed' calls schedule_callback when callback_url set."""
+        from fleet_api.tasks.service import process_sidecar_event
+
+        task = MagicMock(spec=Task)
+        task.id = "task-int001"
+        task.status = TaskStatus.RUNNING
+        task.executor_agent_id = "exec-agent"
+        task.callback_url = "https://agent.example.com/callback"
+        task.started_at = datetime(2026, 3, 7, 14, 0, 0, tzinfo=UTC)
+        task.completed_at = None
+        task.result = None
+        task.metadata_ = None
+
+        # Mock transition_to to actually change the status
+        def do_transition(new_status: TaskStatus) -> None:
+            task.status = new_status
+            task.completed_at = datetime(2026, 3, 7, 15, 0, 0, tzinfo=UTC)
+
+        task.transition_to = MagicMock(side_effect=do_transition)
+
+        # Mock session
+        session = AsyncMock()
+        session.get = AsyncMock(return_value=task)
+
+        # Mock max sequence query
+        mock_scalar = MagicMock()
+        mock_scalar.scalar_one = MagicMock(return_value=0)
+        session.execute = AsyncMock(return_value=mock_scalar)
+
+        with patch("fleet_api.tasks.service.schedule_callback") as mock_schedule:
+            event, returned_task = await process_sidecar_event(
+                session=session,
+                task_id="task-int001",
+                event_type="completed",
+                data={"result": {"output": "done"}},
+                sequence=1,
+                executor_agent_id="exec-agent",
+            )
+
+        mock_schedule.assert_called_once_with(task)
+
+    @pytest.mark.asyncio
+    async def test_no_callback_when_url_is_none(self) -> None:
+        """process_sidecar_event with terminal event skips callback when callback_url is None."""
+        from fleet_api.tasks.service import process_sidecar_event
+
+        task = MagicMock(spec=Task)
+        task.id = "task-int002"
+        task.status = TaskStatus.RUNNING
+        task.executor_agent_id = "exec-agent"
+        task.callback_url = None
+        task.started_at = datetime(2026, 3, 7, 14, 0, 0, tzinfo=UTC)
+        task.completed_at = None
+        task.result = None
+        task.metadata_ = None
+
+        def do_transition(new_status: TaskStatus) -> None:
+            task.status = new_status
+            task.completed_at = datetime(2026, 3, 7, 15, 0, 0, tzinfo=UTC)
+
+        task.transition_to = MagicMock(side_effect=do_transition)
+
+        session = AsyncMock()
+        session.get = AsyncMock(return_value=task)
+        mock_scalar = MagicMock()
+        mock_scalar.scalar_one = MagicMock(return_value=0)
+        session.execute = AsyncMock(return_value=mock_scalar)
+
+        with patch("fleet_api.tasks.service.schedule_callback") as mock_schedule:
+            await process_sidecar_event(
+                session=session,
+                task_id="task-int002",
+                event_type="completed",
+                data={"result": {"output": "done"}},
+                sequence=1,
+                executor_agent_id="exec-agent",
+            )
+
+        mock_schedule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_event_triggers_schedule_callback(self) -> None:
+        """process_sidecar_event with 'failed' also triggers schedule_callback."""
+        from fleet_api.tasks.service import process_sidecar_event
+
+        task = MagicMock(spec=Task)
+        task.id = "task-int003"
+        task.status = TaskStatus.RUNNING
+        task.executor_agent_id = "exec-agent"
+        task.callback_url = "https://agent.example.com/callback"
+        task.started_at = datetime(2026, 3, 7, 14, 0, 0, tzinfo=UTC)
+        task.completed_at = None
+        task.result = None
+        task.metadata_ = None
+
+        def do_transition(new_status: TaskStatus) -> None:
+            task.status = new_status
+            task.completed_at = datetime(2026, 3, 7, 15, 0, 0, tzinfo=UTC)
+
+        task.transition_to = MagicMock(side_effect=do_transition)
+
+        session = AsyncMock()
+        session.get = AsyncMock(return_value=task)
+        mock_scalar = MagicMock()
+        mock_scalar.scalar_one = MagicMock(return_value=0)
+        session.execute = AsyncMock(return_value=mock_scalar)
+
+        with patch("fleet_api.tasks.service.schedule_callback") as mock_schedule:
+            await process_sidecar_event(
+                session=session,
+                task_id="task-int003",
+                event_type="failed",
+                data={"error_code": "TIMEOUT", "message": "Task timed out"},
+                sequence=1,
+                executor_agent_id="exec-agent",
+            )
+
+        mock_schedule.assert_called_once_with(task)
 
 
 # ---------------------------------------------------------------------------

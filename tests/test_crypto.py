@@ -24,7 +24,6 @@ from cryptography.hazmat.primitives.serialization import (
     Encoding,
     NoEncryption,
     PrivateFormat,
-    PublicFormat,
 )
 
 from fleet_api.crypto import (
