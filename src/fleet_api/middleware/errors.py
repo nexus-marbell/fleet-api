@@ -68,7 +68,15 @@ def register_error_handlers(app: FastAPI) -> None:
             suggestion="Check the request body against the expected schema.",
         )
         response = error.to_dict()
-        response["validation_errors"] = exc.errors()
+        # Sanitize validation errors: pydantic ctx may contain non-serializable
+        # objects (e.g., ValueError instances from custom validators).
+        sanitized: list[dict[str, Any]] = []
+        for err in exc.errors():
+            clean = {k: v for k, v in err.items() if k != "ctx"}
+            if "ctx" in err and isinstance(err["ctx"], dict):
+                clean["ctx"] = {k: str(v) for k, v in err["ctx"].items()}
+            sanitized.append(clean)
+        response["validation_errors"] = sanitized
         return JSONResponse(status_code=422, content=response)
 
     @app.exception_handler(Exception)
