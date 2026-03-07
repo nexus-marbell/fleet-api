@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 from collections.abc import AsyncGenerator
 
 from fleet_agent.models import PendingTask, TaskEvent
@@ -50,20 +51,27 @@ class LocalExecutor:
 
         try:
             process = await asyncio.create_subprocess_exec(
-                self._handler_command,
+                *shlex.split(self._handler_command),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError as exc:
             sequence += 1
+            resolved = shlex.split(self._handler_command)
             yield TaskEvent(
                 event_type="failed",
-                data={"error": f"Handler command not found: {self._handler_command}"},
+                data={
+                    "error": (
+                        f"Handler command not found: {self._handler_command!r}"
+                        f" (resolved: {resolved})"
+                    )
+                },
                 sequence=sequence,
             )
             raise ExecutionError(
-                f"Handler command not found: {self._handler_command}"
+                f"Handler command not found: {self._handler_command!r}"
+                f" (resolved: {resolved})"
             ) from exc
 
         # Feed stdin and close it so the handler can start processing.
