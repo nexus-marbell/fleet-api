@@ -1,7 +1,8 @@
-"""Task business logic — creation, idempotency, input validation."""
+"""Task business logic — creation, dispatch, read, and list operations."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import uuid
@@ -9,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jsonschema
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.agents.models import Agent, AgentStatus
@@ -34,12 +35,15 @@ IDEMPOTENCY_TTL_HOURS = 24
 # ---------------------------------------------------------------------------
 
 
-def build_task_links(task_id: str, workflow_id: str, status: str) -> dict[str, Any]:
-    """Build HATEOAS _links for a task resource.
+def build_task_links(task_id: str, workflow_id: str, status: TaskStatus | str) -> dict[str, Any]:
+    """Build state-dependent HATEOAS links for a task (RFC section 3.6).
 
-    The set of available actions depends on the current task status.
-    For "accepted" status: self, stream, pause, cancel, context, workflow.
+    The set of available action links depends on the current task status.
+    Navigation links (self, stream, workflow) are always present.
     """
+    if not isinstance(status, TaskStatus):
+        status = TaskStatus(status)
+
     base = f"/workflows/{workflow_id}/tasks/{task_id}"
     links: dict[str, Any] = {
         "self": {"href": base},
@@ -47,15 +51,158 @@ def build_task_links(task_id: str, workflow_id: str, status: str) -> dict[str, A
         "workflow": {"href": f"/workflows/{workflow_id}"},
     }
 
-    # Action links depend on status
-    if status in ("accepted", "running"):
+    if status == TaskStatus.ACCEPTED:
         links["cancel"] = {"method": "POST", "href": f"{base}/cancel"}
-    if status in ("accepted", "running"):
+
+    elif status == TaskStatus.RUNNING:
         links["pause"] = {"method": "POST", "href": f"{base}/pause"}
-    if status in ("accepted", "running", "paused"):
+        links["cancel"] = {"method": "POST", "href": f"{base}/cancel"}
         links["context"] = {"method": "POST", "href": f"{base}/context"}
+        links["redirect"] = {"method": "POST", "href": f"{base}/redirect"}
+
+    elif status == TaskStatus.PAUSED:
+        links["resume"] = {"method": "POST", "href": f"{base}/resume"}
+        links["cancel"] = {"method": "POST", "href": f"{base}/cancel"}
+        links["context"] = {"method": "POST", "href": f"{base}/context"}
+        links["redirect"] = {"method": "POST", "href": f"{base}/redirect"}
+
+    elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        links["retask"] = {"method": "POST", "href": f"{base}/retask"}
+        links["rerun"] = {"method": "POST", "href": f"/workflows/{workflow_id}/run"}
+
+    elif status == TaskStatus.CANCELLED:
+        links["rerun"] = {"method": "POST", "href": f"/workflows/{workflow_id}/run"}
+
+    elif status == TaskStatus.REDIRECTED:
+        links["redirected_to"] = {"href": f"{base}/redirected_to"}
+
+    elif status == TaskStatus.RETASKED:
+        links["retask_to"] = {"href": f"{base}/retask_to"}
 
     return links
+
+
+# ---------------------------------------------------------------------------
+# Response builders
+# ---------------------------------------------------------------------------
+
+
+def _compute_duration(started_at: datetime | None, completed_at: datetime | None) -> int | None:
+    """Compute duration in seconds between started_at and completed_at."""
+    if started_at is None or completed_at is None:
+        return None
+    return int((completed_at - started_at).total_seconds())
+
+
+def task_to_detail_response(task: Task) -> dict[str, Any]:
+    """Convert a Task model to a full detail response dict (RFC section 3.6)."""
+    status = task.status if isinstance(task.status, TaskStatus) else TaskStatus(task.status)
+
+    response: dict[str, Any] = {
+        "task_id": task.id,
+        "workflow_id": task.workflow_id,
+        "status": status.value,
+        "caller": task.principal_agent_id,
+        "executor": task.executor_agent_id,
+        "priority": (
+            task.priority.value if hasattr(task.priority, "value") else str(task.priority)
+        ),
+        "input": task.input,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+    # Always include started_at if present
+    if task.started_at is not None:
+        response["started_at"] = task.started_at.isoformat()
+
+    if status == TaskStatus.RUNNING:
+        # Running tasks get progress and estimated_completion, no result
+        response["progress"] = (
+            task.metadata_.get("progress", 0) if task.metadata_ else 0
+        )
+        response["estimated_completion"] = (
+            task.metadata_.get("estimated_completion") if task.metadata_ else None
+        )
+    elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        # Terminal states with result
+        response["result"] = task.result
+        response["warnings"] = (
+            task.metadata_.get("warnings", []) if task.metadata_ else []
+        )
+        if status == TaskStatus.COMPLETED:
+            response["quality"] = (
+                task.metadata_.get(
+                    "quality",
+                    {"input_valid": True, "execution_clean": True, "result_complete": True},
+                )
+                if task.metadata_
+                else {"input_valid": True, "execution_clean": True, "result_complete": True}
+            )
+        response["completed_at"] = (
+            task.completed_at.isoformat() if task.completed_at else None
+        )
+        response["duration_seconds"] = _compute_duration(task.started_at, task.completed_at)
+
+    elif status in (TaskStatus.CANCELLED, TaskStatus.REDIRECTED, TaskStatus.RETASKED):
+        # Other terminal states
+        if task.completed_at is not None:
+            response["completed_at"] = task.completed_at.isoformat()
+
+    response["_links"] = build_task_links(task.id, task.workflow_id, status)
+    return response
+
+
+def task_to_summary_response(task: Task) -> dict[str, Any]:
+    """Convert a Task model to a list summary response dict (RFC section 3.7)."""
+    status = task.status if isinstance(task.status, TaskStatus) else TaskStatus(task.status)
+
+    response: dict[str, Any] = {
+        "task_id": task.id,
+        "status": status.value,
+        "caller": task.principal_agent_id,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+    # Include completed_at for terminal states
+    if task.completed_at is not None:
+        response["completed_at"] = task.completed_at.isoformat()
+
+    # Include duration_seconds for completed tasks
+    if status == TaskStatus.COMPLETED:
+        response["duration_seconds"] = _compute_duration(task.started_at, task.completed_at)
+
+    base = f"/workflows/{task.workflow_id}/tasks/{task.id}"
+    response["_links"] = {
+        "self": {"href": base},
+        "stream": {"href": f"{base}/stream"},
+    }
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Cursor pagination helpers
+# ---------------------------------------------------------------------------
+
+
+def encode_task_cursor(task_id: str, created_at: datetime) -> str:
+    """Encode a task ID and created_at into an opaque base64 cursor."""
+    payload = {"id": task_id, "created_at": created_at.isoformat()}
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+def decode_task_cursor(cursor: str) -> tuple[str, datetime]:
+    """Decode an opaque base64 cursor to extract task ID and created_at."""
+    try:
+        data = json.loads(base64.b64decode(cursor))
+        task_id = str(data["id"])
+        created_at = datetime.fromisoformat(str(data["created_at"]))
+        return task_id, created_at
+    except (ValueError, KeyError, TypeError) as e:
+        raise InputValidationError(
+            code=ErrorCode.INVALID_INPUT,
+            message="Invalid pagination cursor.",
+            suggestion="Use the cursor value returned from a previous list response.",
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +211,7 @@ def build_task_links(task_id: str, workflow_id: str, status: str) -> dict[str, A
 
 
 class TaskService:
-    """Business logic for task creation and dispatch."""
+    """Business logic for task creation, dispatch, read, and list operations."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -80,6 +227,10 @@ class TaskService:
                 links={"workflows": "/workflows"},
             )
         return workflow
+
+    async def _verify_workflow_exists(self, workflow_id: str) -> None:
+        """Raise NotFoundError if the workflow does not exist."""
+        await self.get_workflow_or_404(workflow_id)
 
     def validate_input(
         self, input_data: dict[str, Any], input_schema: dict[str, Any] | None
@@ -239,7 +390,7 @@ class TaskService:
         is_replay: bool = False,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Build the RFC-compliant task response dict."""
+        """Build the RFC-compliant task response dict for dispatch (POST /run)."""
         status_value = (
             task.status.value if isinstance(task.status, TaskStatus) else str(task.status)
         )
@@ -277,3 +428,110 @@ class TaskService:
             }
 
         return response
+
+    async def get_task(self, workflow_id: str, task_id: str) -> Task:
+        """Get a single task by ID within a workflow.
+
+        Raises NotFoundError if workflow or task not found, or if the task
+        belongs to a different workflow.
+        """
+        await self._verify_workflow_exists(workflow_id)
+
+        task = await self.session.get(Task, task_id)
+        if task is None or task.workflow_id != workflow_id:
+            raise NotFoundError(
+                code=ErrorCode.TASK_NOT_FOUND,
+                message=f"Task '{task_id}' not found in workflow '{workflow_id}'.",
+                suggestion=(
+                    "Check the task ID. "
+                    "Use GET /workflows/{workflow_id}/tasks to list tasks."
+                ),
+                links={"tasks": {"href": f"/workflows/{workflow_id}/tasks"}},
+            )
+        return task
+
+    async def list_tasks(
+        self,
+        workflow_id: str,
+        status: str | None = None,
+        caller: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> tuple[list[Task], str | None, bool, int]:
+        """List tasks for a workflow with filtering and cursor pagination.
+
+        Returns (tasks, next_cursor, has_more, total_count).
+        """
+        await self._verify_workflow_exists(workflow_id)
+
+        base_stmt = (
+            select(Task)
+            .where(Task.workflow_id == workflow_id)
+            .order_by(Task.created_at.desc())
+        )
+
+        # Apply filters
+        if status is not None:
+            try:
+                status_enum = TaskStatus(status)
+            except ValueError:
+                valid_values = ", ".join(s.value for s in TaskStatus)
+                raise InputValidationError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=f"Invalid status filter '{status}'.",
+                    suggestion=f"Use one of: {valid_values}.",
+                )
+            base_stmt = base_stmt.where(Task.status == status_enum)
+
+        if caller is not None:
+            base_stmt = base_stmt.where(Task.principal_agent_id == caller)
+
+        if since is not None:
+            try:
+                since_dt = datetime.fromisoformat(since)
+            except ValueError:
+                raise InputValidationError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=f"Invalid 'since' timestamp: '{since}'.",
+                    suggestion="Use ISO 8601 format, e.g. '2026-03-07T00:00:00Z'.",
+                )
+            base_stmt = base_stmt.where(Task.created_at >= since_dt)
+
+        if until is not None:
+            try:
+                until_dt = datetime.fromisoformat(until)
+            except ValueError:
+                raise InputValidationError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=f"Invalid 'until' timestamp: '{until}'.",
+                    suggestion="Use ISO 8601 format, e.g. '2026-03-07T23:59:59Z'.",
+                )
+            base_stmt = base_stmt.where(Task.created_at <= until_dt)
+
+        # Total count (after filters, before cursor/limit)
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_count = (await self.session.execute(count_stmt)).scalar_one()
+
+        # Apply cursor (created_at DESC ordering — cursor means "older than")
+        stmt = base_stmt
+        if cursor is not None:
+            _cursor_task_id, cursor_created_at = decode_task_cursor(cursor)
+            stmt = stmt.where(Task.created_at < cursor_created_at)
+
+        # Fetch limit + 1 to detect has_more
+        stmt = stmt.limit(limit + 1)
+        result = await self.session.execute(stmt)
+        tasks = list(result.scalars().all())
+
+        has_more = len(tasks) > limit
+        if has_more:
+            tasks = tasks[:limit]
+
+        next_cursor: str | None = None
+        if has_more and tasks:
+            last_task = tasks[-1]
+            next_cursor = encode_task_cursor(last_task.id, last_task.created_at)
+
+        return tasks, next_cursor, has_more, total_count
