@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # Limits (RFC 1 defaults)
     fleet_task_retention_days: int = 30
-    fleet_retask_max_depth: int = 10
+    fleet_lineage_max_depth: int = 10
     fleet_delegation_max_depth: int = 4
     fleet_heartbeat_timeout_seconds: int = 90
     fleet_heartbeat_sweep_interval: int = 30

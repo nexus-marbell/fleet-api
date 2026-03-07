@@ -67,7 +67,9 @@ class Task(Base):
     root_task_id: Mapped[str | None] = mapped_column(
         String(128), ForeignKey("tasks.id"), nullable=True, index=True
     )
-    retask_depth: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    lineage_depth: Mapped[int] = mapped_column(
+        "lineage_depth", Integer, server_default="0", nullable=False
+    )
     delegation_depth: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     callback_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(

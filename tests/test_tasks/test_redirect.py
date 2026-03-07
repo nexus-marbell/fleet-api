@@ -39,6 +39,7 @@ from fleet_api.app import create_app
 from fleet_api.errors import (
     AuthError,
     ErrorCode,
+    InputValidationError,
     NotFoundError,
     StateError,
 )
@@ -80,7 +81,7 @@ def _make_new_task(
     workflow_id: str = WORKFLOW_ID,
     parent_task_id: str = TASK_ID,
     root_task_id: str = TASK_ID,
-    retask_depth: int = 1,
+    lineage_depth: int = 1,
     principal_agent_id: str = AGENT_ID,
     executor_agent_id: str = EXECUTOR_ID,
     priority: TaskPriority = TaskPriority.HIGH,
@@ -94,7 +95,7 @@ def _make_new_task(
     task.workflow_id = workflow_id
     task.parent_task_id = parent_task_id
     task.root_task_id = root_task_id
-    task.retask_depth = retask_depth
+    task.lineage_depth = lineage_depth
     task.principal_agent_id = principal_agent_id
     task.executor_agent_id = executor_agent_id
     task.status = TaskStatus.ACCEPTED
@@ -117,7 +118,7 @@ def _make_original_task(
     status: TaskStatus = TaskStatus.REDIRECTED,
     task_input: dict[str, Any] | None = None,
     result: dict[str, Any] | None = None,
-    retask_depth: int = 0,
+    lineage_depth: int = 0,
     root_task_id: str | None = None,
     priority: TaskPriority = TaskPriority.HIGH,
     metadata: dict[str, Any] | None = None,
@@ -134,7 +135,7 @@ def _make_original_task(
     task.priority = priority
     task.created_at = CREATED_AT
     task.completed_at = None
-    task.retask_depth = retask_depth
+    task.lineage_depth = lineage_depth
     task.root_task_id = root_task_id
     task.parent_task_id = None
     task.timeout_seconds = 300
@@ -415,6 +416,47 @@ class TestRedirectStateValidation:
 
 
 # ---------------------------------------------------------------------------
+# Depth limit
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectDepthLimit:
+    """Redirect respects lineage depth limit."""
+
+    @pytest.mark.asyncio
+    async def test_depth_limit_exceeded(self) -> None:
+        """POST redirect when lineage_depth >= max returns 422."""
+        app = _create_test_app()
+
+        with patch(
+            "fleet_api.tasks.routes.redirect_task",
+            new_callable=AsyncMock,
+            side_effect=InputValidationError(
+                code=ErrorCode.RETASK_DEPTH_EXCEEDED,
+                message=(
+                    "Lineage depth limit (10) exceeded. "
+                    f"Task '{TASK_ID}' is already at depth 10."
+                ),
+                suggestion=(
+                    "The lineage chain has reached its maximum depth. "
+                    "Start a new task instead."
+                ),
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    _url(),
+                    json=_redirect_body(),
+                )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["code"] == "RETASK_DEPTH_EXCEEDED"
+        assert "depth" in data["message"].lower()
+
+
+# ---------------------------------------------------------------------------
 # 404 — workflow and task not found
 # ---------------------------------------------------------------------------
 
@@ -485,7 +527,7 @@ class TestRedirectLineage:
     async def test_lineage_depth_1(self) -> None:
         """Response contains lineage with depth 1 for first redirect."""
         app = _create_test_app()
-        new_task = _make_new_task(retask_depth=1, root_task_id=TASK_ID)
+        new_task = _make_new_task(lineage_depth=1, root_task_id=TASK_ID)
         original_task = _make_original_task()
 
         with (
@@ -517,13 +559,13 @@ class TestRedirectLineage:
         root_id = "task-root0000"
         parent_id = TASK_ID
         new_task = _make_new_task(
-            retask_depth=2,
+            lineage_depth=2,
             root_task_id=root_id,
             parent_task_id=parent_id,
         )
         original_task = _make_original_task(
             root_task_id=root_id,
-            retask_depth=1,
+            lineage_depth=1,
         )
 
         with (
@@ -819,7 +861,7 @@ class TestRedirectEventCreation:
         mock_task.input = {"prompt": "original input"}
         mock_task.result = None
         mock_task.priority = TaskPriority.HIGH
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300
@@ -893,7 +935,7 @@ class TestRedirectEventCreation:
         mock_task.input = {"prompt": "original input"}
         mock_task.result = None
         mock_task.priority = TaskPriority.NORMAL
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300
@@ -946,7 +988,7 @@ class TestRedirectEventCreation:
         mock_task.input = {"prompt": "original"}
         mock_task.result = None
         mock_task.priority = TaskPriority.NORMAL
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300
@@ -998,7 +1040,7 @@ class TestRedirectEventCreation:
         mock_task.input = {"prompt": "original"}
         mock_task.result = None
         mock_task.priority = TaskPriority.NORMAL
-        mock_task.retask_depth = 0
+        mock_task.lineage_depth = 0
         mock_task.root_task_id = None
         mock_task.parent_task_id = None
         mock_task.timeout_seconds = 300

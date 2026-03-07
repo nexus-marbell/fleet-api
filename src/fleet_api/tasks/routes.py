@@ -398,7 +398,7 @@ async def retask_task_endpoint(
         "priority": priority_value,
         "created_at": new_task.created_at.isoformat() if new_task.created_at else None,
         "lineage": {
-            "depth": new_task.retask_depth,
+            "depth": new_task.lineage_depth,
             "root_task_id": new_task.root_task_id,
             "chain": chain,
         },
@@ -472,7 +472,7 @@ async def redirect_task_endpoint(
         "status": status_value,
         "redirected_from": original_task.id,
         "lineage": {
-            "depth": new_task.retask_depth,
+            "depth": new_task.lineage_depth,
             "root_task_id": new_task.root_task_id,
             "chain": chain,
         },
@@ -484,6 +484,7 @@ async def redirect_task_endpoint(
     }
 
     # Add redirected_from link per RFC §3.15
+    # RFC §3.15 shows bare string links; using HATEOAS object form per Agentic API Standard §2
     response_data["_links"]["redirected_from"] = {
         "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
     }

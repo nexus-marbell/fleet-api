@@ -404,13 +404,13 @@ async def retask_task(
             ),
         )
 
-    # 5. Check retask depth limit
-    if task.retask_depth >= settings.fleet_retask_max_depth:
+    # 5. Check lineage depth limit
+    if task.lineage_depth >= settings.fleet_lineage_max_depth:
         raise InputValidationError(
             code=ErrorCode.RETASK_DEPTH_EXCEEDED,
             message=(
-                f"Retask depth limit ({settings.fleet_retask_max_depth}) exceeded. "
-                f"Task '{task_id}' is already at depth {task.retask_depth}."
+                f"Lineage depth limit ({settings.fleet_lineage_max_depth}) exceeded. "
+                f"Task '{task_id}' is already at depth {task.lineage_depth}."
             ),
             suggestion="The retask chain has reached its maximum depth. Start a new task instead.",
         )
@@ -423,7 +423,7 @@ async def retask_task(
 
     # 7. Determine lineage
     root_task_id = task.root_task_id or task.id
-    new_retask_depth = task.retask_depth + 1
+    new_lineage_depth = task.lineage_depth + 1
 
     # 8. Build merged input
     merged_input = dict(task.input) if task.input else {}
@@ -464,7 +464,7 @@ async def retask_task(
         timeout_seconds=task.timeout_seconds,
         parent_task_id=task.id,
         root_task_id=root_task_id,
-        retask_depth=new_retask_depth,
+        lineage_depth=new_lineage_depth,
         delegation_depth=task.delegation_depth,
         created_at=now,
         metadata_={"refinement": refinement},
@@ -525,7 +525,7 @@ async def build_lineage_chain(
     current_parent_id = task.parent_task_id
 
     # Walk up to root (limit iterations for safety)
-    for _ in range(task.retask_depth):
+    for _ in range(task.lineage_depth):
         if current_parent_id is None:
             break
         parent = await session.get(Task, current_parent_id)
@@ -571,7 +571,7 @@ async def redirect_task(
 
     Transitions the original task to REDIRECTED and creates a new task with
     the provided new_input (replaces original input entirely).  Lineage is
-    tracked using the same parent_task_id / root_task_id / retask_depth
+    tracked using the same parent_task_id / root_task_id / lineage_depth
     columns used by retask.
 
     Args:
@@ -591,6 +591,7 @@ async def redirect_task(
         NotFoundError: Workflow or task not found.
         AuthError: Caller is not the task principal or workflow owner.
         StateError: Task is not in RUNNING or PAUSED state.
+        InputValidationError: Lineage depth exceeded.
     """
     # 1. Fetch workflow
     workflow = await session.get(Workflow, workflow_id)
@@ -631,15 +632,26 @@ async def redirect_task(
             ),
         )
 
-    # 5. Transition original task to REDIRECTED
+    # 5. Check lineage depth limit
+    if task.lineage_depth >= settings.fleet_lineage_max_depth:
+        raise InputValidationError(
+            code=ErrorCode.RETASK_DEPTH_EXCEEDED,
+            message=(
+                f"Lineage depth limit ({settings.fleet_lineage_max_depth}) exceeded. "
+                f"Task '{task_id}' is already at depth {task.lineage_depth}."
+            ),
+            suggestion="The lineage chain has reached its maximum depth. Start a new task instead.",
+        )
+
+    # 6. Transition original task to REDIRECTED
     old_status = task.status
     task.transition_to(TaskStatus.REDIRECTED)
 
-    # 6. Determine lineage
+    # 7. Determine lineage
     root_task_id = task.root_task_id or task.id
-    new_retask_depth = task.retask_depth + 1
+    new_lineage_depth = task.lineage_depth + 1
 
-    # 7. Resolve priority
+    # 8. Resolve priority
     if priority is not None:
         try:
             priority_enum = TaskPriority(priority)
@@ -657,7 +669,7 @@ async def redirect_task(
             else TaskPriority(task.priority)
         )
 
-    # 8. Build metadata for new task
+    # 9. Build metadata for new task
     new_metadata: dict[str, Any] = {"redirect_reason": reason}
     if inherit_progress and task.metadata_:
         progress = task.metadata_.get("progress")
@@ -667,7 +679,7 @@ async def redirect_task(
         if progress_message is not None:
             new_metadata["progress_message"] = progress_message
 
-    # 9. Create new task
+    # 10. Create new task
     new_task_id = f"task-{uuid.uuid4().hex[:8]}"
     now = datetime.now(UTC)
 
@@ -682,14 +694,14 @@ async def redirect_task(
         timeout_seconds=task.timeout_seconds,
         parent_task_id=task.id,
         root_task_id=root_task_id,
-        retask_depth=new_retask_depth,
+        lineage_depth=new_lineage_depth,
         delegation_depth=task.delegation_depth,
         created_at=now,
         metadata_=new_metadata,
     )
     session.add(new_task)
 
-    # 10. Create status event on original task ("redirected")
+    # 11. Create status event on original task ("redirected")
     max_seq_result = await session.execute(
         select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
             TaskEvent.task_id == task.id
@@ -712,7 +724,7 @@ async def redirect_task(
     )
     session.add(event)
 
-    # 11. Create initial event on new task
+    # 12. Create initial event on new task
     new_event = TaskEvent(
         task_id=new_task_id,
         event_type="created",
@@ -726,7 +738,7 @@ async def redirect_task(
     )
     session.add(new_event)
 
-    # 12. Commit
+    # 13. Commit
     await session.commit()
     await session.refresh(new_task)
     await session.refresh(task)
