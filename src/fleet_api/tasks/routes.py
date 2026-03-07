@@ -55,7 +55,7 @@ class TaskRunRequest(BaseModel):
     metadata: dict[str, Any] | None = Field(None, description="Arbitrary metadata")
     callback_url: str | None = Field(
         None,
-        description="Webhook URL for result delivery — delivery in Phase 2",
+        description="Webhook URL for signed result delivery on task completion or failure",
     )
 
 
@@ -172,6 +172,7 @@ async def run_task(
         timeout_seconds=body.timeout_seconds,
         idempotency_key=effective_idempotency_key,
         metadata=body.metadata,
+        callback_url=body.callback_url,
     )
 
     response_data = service.build_task_response(

@@ -92,10 +92,13 @@ class TestManifestAuth:
         assert data["auth"]["key_registration"] == "/agents/register"
 
     @pytest.mark.asyncio
-    async def test_server_public_key_null_when_no_private_key(self, client):
-        """Server public key is null when no private key is configured."""
+    async def test_server_public_key_present(self, client):
+        """Server public key is a PEM-encoded Ed25519 key (generated or loaded)."""
         data = (await client.get("/manifest")).json()
-        assert data["auth"]["server_public_key"] is None
+        key = data["auth"]["server_public_key"]
+        assert key is not None
+        assert key.startswith("-----BEGIN PUBLIC KEY-----")
+        assert key.strip().endswith("-----END PUBLIC KEY-----")
 
     @pytest.mark.asyncio
     async def test_auth_fields_match_rfc(self, client):

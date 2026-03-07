@@ -69,6 +69,7 @@ class Task(Base):
     )
     retask_depth: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     delegation_depth: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    callback_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(
         String(256), unique=True, nullable=True
     )

@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from fleet_api.config import settings
+from fleet_api.crypto import get_server_public_key_pem
 
 router = APIRouter()
 
@@ -34,7 +35,7 @@ def _build_manifest() -> dict[str, Any]:
             "header": "Authorization",
             "format": "Signature <agent_id>:<base64_signature>",
             "key_registration": "/agents/register",
-            "server_public_key": None,  # Phase 2: callback verification
+            "server_public_key": get_server_public_key_pem(),
         },
         "capabilities": [
             "workflow_registry",

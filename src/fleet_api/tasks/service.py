@@ -23,8 +23,9 @@ from fleet_api.errors import (
     NotFoundError,
     StateError,
 )
+from fleet_api.tasks.callbacks import schedule_callback
 from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
-from fleet_api.tasks.state_machine import InvalidStateTransition
+from fleet_api.tasks.state_machine import InvalidStateTransition, is_terminal
 from fleet_api.workflows.models import Workflow
 
 logger = logging.getLogger(__name__)
@@ -430,6 +431,7 @@ class TaskService:
         timeout_seconds: int | None = None,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
+        callback_url: str | None = None,
     ) -> tuple[Task, Workflow, bool]:
         """Create a task for a workflow.
 
@@ -470,6 +472,7 @@ class TaskService:
             input=input_data,
             priority=priority_enum,
             timeout_seconds=effective_timeout,
+            callback_url=callback_url,
             idempotency_key=idempotency_key,
             created_at=now,
             metadata_=metadata,
@@ -858,5 +861,9 @@ async def process_sidecar_event(
     await session.commit()
     await session.refresh(task)
     await session.refresh(event)
+
+    # 8. Schedule callback delivery for terminal events
+    if is_terminal(task.status) and task.callback_url is not None:
+        schedule_callback(task)
 
     return event, task
