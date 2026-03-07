@@ -1,0 +1,72 @@
+# Dockerfile.agent.template
+# Template for building custom fleet agent images.
+# Copy this file, rename to Dockerfile.<agent-name>, and customize.
+#
+# Architecture: extends the base sidecar image with agent-specific
+# dependencies and executor command. The sidecar handles Fleet API
+# communication (registration, heartbeat, polling, streaming).
+# Your custom executor handles the actual task work.
+#
+# Usage:
+#   1. cp Dockerfile.agent.template Dockerfile.my-agent
+#   2. Uncomment and edit the marked sections below
+#   3. docker build -f Dockerfile.my-agent -t fleet-my-agent .
+#
+# What NOT to change:
+#   - The sidecar-builder stage (provides Fleet API communication)
+#   - The fleet user/group (UID/GID 1000, required for security)
+#   - The EXPOSE 8001 and HEALTHCHECK (required for Fleet orchestration)
+#   - The CMD (boots the sidecar which manages your executor)
+
+# ---- Stage 1: Base sidecar ----
+FROM python:3.12-slim AS sidecar-builder
+
+WORKDIR /app
+COPY pyproject.toml .
+COPY src/ src/
+RUN pip install --no-cache-dir ".[sidecar]"
+
+# ---- Stage 2: Agent-specific dependencies ----
+FROM python:3.12-slim AS agent-builder
+
+WORKDIR /app
+# ADD YOUR AGENT'S REQUIREMENTS HERE:
+# COPY agent-requirements.txt .
+# RUN pip install --no-cache-dir -r agent-requirements.txt
+#
+# Examples:
+#   Coding agent:  RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+#   Data agent:    RUN pip install --no-cache-dir pandas numpy
+#   Web agent:     RUN pip install --no-cache-dir httpx beautifulsoup4
+
+# ---- Stage 3: Runtime ----
+FROM python:3.12-slim
+
+RUN groupadd --gid 1000 fleet && \
+    useradd --uid 1000 --gid fleet --create-home --shell /bin/bash fleet
+
+WORKDIR /app
+
+# Sidecar packages (do not remove — required for Fleet API communication)
+COPY --from=sidecar-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=sidecar-builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
+
+# Agent-specific packages (uncomment when using agent-builder stage)
+# COPY --from=agent-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+
+# ADD YOUR AGENT'S EXECUTOR SCRIPT/BINARY HERE:
+# COPY my_executor.py .
+# COPY my_agent/ my_agent/
+
+USER fleet
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/fleet/health')" || exit 1
+
+# Override FLEET_EXECUTOR_COMMAND via environment variable at deploy time,
+# or set a default here:
+# ENV FLEET_EXECUTOR_COMMAND="python my_executor.py"
+
+CMD ["python", "-m", "fleet_agent"]
