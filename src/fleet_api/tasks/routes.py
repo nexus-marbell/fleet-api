@@ -28,6 +28,7 @@ from fleet_api.tasks.service import (
     build_task_links,
     cancel_task,
     count_context_injections,
+    inject_context,
     pause_task,
     process_sidecar_event,
     redirect_task,
@@ -115,6 +116,32 @@ class TaskRedirectRequest(BaseModel):
     priority: str | None = Field(
         None,
         description="Priority for new task. If omitted, inherits from original.",
+    )
+
+
+class ContextPayload(BaseModel):
+    """Payload for context injection per RFC §3.13."""
+
+    message: str = Field(..., description="Human-readable description of the context")
+    data: dict[str, Any] | None = Field(None, description="Optional structured data")
+
+
+class ContextInjectionRequest(BaseModel):
+    """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/context."""
+
+    context_type: Literal["additional_input", "constraint", "correction", "reference"] = Field(
+        ...,
+        description="One of: additional_input, constraint, correction, reference",
+    )
+    payload: ContextPayload
+    sequence: int = Field(
+        ...,
+        description="Monotonically increasing context sequence number",
+        gt=0,
+    )
+    urgency: Literal["low", "normal", "immediate"] = Field(
+        "normal",
+        description="Urgency level: low, normal, immediate",
     )
 
 
@@ -588,6 +615,39 @@ def _resume_response(task: Task, event: Any) -> dict[str, Any]:
         "_links": build_task_links(task.id, task.workflow_id, task.status),
     }
 
+
+# ---------------------------------------------------------------------------
+# POST /workflows/{workflow_id}/tasks/{task_id}/context — Phase 2 Unit 4
+# ---------------------------------------------------------------------------
+
+
+@router.post("/workflows/{workflow_id}/tasks/{task_id}/context", status_code=202)
+async def inject_context_endpoint(
+    workflow_id: str,
+    task_id: str,
+    body: ContextInjectionRequest,
+    agent: AuthenticatedAgent = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """Inject additional context into a running or paused task.
+
+    Returns 202 Accepted with the context injection details.
+    Rejects out-of-sequence injections with 409 CONTEXT_REJECTED.
+    """
+    payload_dict = body.payload.model_dump(exclude_none=True)
+
+    result = await inject_context(
+        session=session,
+        workflow_id=workflow_id,
+        task_id=task_id,
+        caller_agent_id=agent.agent_id,
+        context_type=body.context_type,
+        payload=payload_dict,
+        sequence=body.sequence,
+        urgency=body.urgency,
+    )
+
+    return JSONResponse(status_code=202, content=result)
 
 
 # ---------------------------------------------------------------------------
