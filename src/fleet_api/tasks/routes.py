@@ -11,7 +11,7 @@ because the sidecar only knows task_id, not the workflow.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import JSONResponse

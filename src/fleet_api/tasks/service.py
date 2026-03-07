@@ -564,22 +564,20 @@ async def get_max_context_sequence(
     Returns 0 if no context injections exist yet.
     """
     result = await session.execute(
-        select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+        select(TaskEvent.data).where(
             TaskEvent.task_id == task_id,
             TaskEvent.event_type == "context_injected",
-        )
+        ).order_by(TaskEvent.created_at.desc()).limit(1)
     )
-    return result.scalar_one()
+    row = result.scalar_one_or_none()
+    if row is None:
+        return 0
+    return int(row.get("context_sequence", 0))
 
 
 # ---------------------------------------------------------------------------
 # Context injection operation
 # ---------------------------------------------------------------------------
-
-# Valid context types per RFC §3.13
-_VALID_CONTEXT_TYPES: frozenset[str] = frozenset(
-    {"additional_input", "constraint", "correction", "reference"}
-)
 
 # Task statuses that accept context injection
 _CONTEXT_INJECTABLE_STATUSES: frozenset[TaskStatus] = frozenset(
@@ -691,6 +689,7 @@ async def inject_context(
         data={
             "context_id": context_id,
             "context_type": context_type,
+            "context_sequence": sequence,
             "payload": payload,
             "urgency": urgency,
             "injected_by": caller_agent_id,
@@ -703,12 +702,12 @@ async def inject_context(
     # 7. Commit
     await session.commit()
 
-    # 8. Build response
+    # 8. Build response (return caller-supplied context sequence, not global event sequence)
     return {
         "context_id": context_id,
         "task_id": task_id,
         "context_type": context_type,
-        "sequence": next_event_sequence,
+        "sequence": sequence,
         "status": "accepted",
         "accepted_at": now.isoformat(),
         # TODO(Phase 2 Wave 3): Idempotency block deferred — see Issue #44

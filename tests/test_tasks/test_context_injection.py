@@ -408,7 +408,7 @@ class TestSequenceEnforcementService:
 
         # Mock: last context sequence is 3
         mock_context_result = MagicMock()
-        mock_context_result.scalar_one.return_value = 3
+        mock_context_result.scalar_one_or_none.return_value = {"context_sequence": 3}
         session.execute = AsyncMock(return_value=mock_context_result)
 
         with pytest.raises(StateError) as exc_info:
@@ -446,7 +446,7 @@ class TestSequenceEnforcementService:
 
         # Mock: last context sequence is 2
         mock_context_result = MagicMock()
-        mock_context_result.scalar_one.return_value = 2
+        mock_context_result.scalar_one_or_none.return_value = {"context_sequence": 2}
         session.execute = AsyncMock(return_value=mock_context_result)
 
         with pytest.raises(StateError) as exc_info:
@@ -481,9 +481,9 @@ class TestSequenceEnforcementService:
 
         session.get = AsyncMock(side_effect=[mock_workflow, mock_task])
 
-        # Two execute calls: first for max context sequence (0), then for max event sequence (5)
+        # Two execute calls: max context seq (None = no prior), max event seq (5)
         mock_ctx_result = MagicMock()
-        mock_ctx_result.scalar_one.return_value = 0
+        mock_ctx_result.scalar_one_or_none.return_value = None
         mock_evt_result = MagicMock()
         mock_evt_result.scalar_one.return_value = 5
         session.execute = AsyncMock(side_effect=[mock_ctx_result, mock_evt_result])
@@ -501,7 +501,7 @@ class TestSequenceEnforcementService:
         assert result["status"] == "accepted"
         assert result["task_id"] == TASK_ID
         assert result["context_type"] == "additional_input"
-        assert result["sequence"] == 6  # next event sequence
+        assert result["sequence"] == 1  # caller-supplied context sequence
         session.commit.assert_called_once()
 
 
@@ -876,9 +876,9 @@ class TestEventCreation:
 
         session.get = AsyncMock(side_effect=[mock_workflow, mock_task])
 
-        # Two execute calls: max context seq (0), max event seq (3)
+        # Two execute calls: max context seq (None = no prior), max event seq (3)
         mock_ctx_result = MagicMock()
-        mock_ctx_result.scalar_one.return_value = 0
+        mock_ctx_result.scalar_one_or_none.return_value = None
         mock_evt_result = MagicMock()
         mock_evt_result.scalar_one.return_value = 3
         session.execute = AsyncMock(side_effect=[mock_ctx_result, mock_evt_result])
@@ -904,6 +904,7 @@ class TestEventCreation:
         assert added_event.event_type == "context_injected"
         assert added_event.sequence == 4  # 3 + 1
         assert added_event.data["context_type"] == "constraint"
+        assert added_event.data["context_sequence"] == 1
         assert added_event.data["payload"] == payload
         assert added_event.data["urgency"] == "immediate"
         assert added_event.data["injected_by"] == AGENT_ID
@@ -912,7 +913,7 @@ class TestEventCreation:
         # Verify response
         assert result["status"] == "accepted"
         assert result["context_type"] == "constraint"
-        assert result["sequence"] == 4
+        assert result["sequence"] == 1  # caller-supplied context sequence
 
     @pytest.mark.asyncio
     async def test_event_urgency_defaults_to_normal(self) -> None:
@@ -933,7 +934,7 @@ class TestEventCreation:
         session.get = AsyncMock(side_effect=[mock_workflow, mock_task])
 
         mock_ctx_result = MagicMock()
-        mock_ctx_result.scalar_one.return_value = 0
+        mock_ctx_result.scalar_one_or_none.return_value = None
         mock_evt_result = MagicMock()
         mock_evt_result.scalar_one.return_value = 0
         session.execute = AsyncMock(side_effect=[mock_ctx_result, mock_evt_result])
@@ -1179,7 +1180,7 @@ class TestServiceAuthorization:
         session.get = AsyncMock(side_effect=[mock_workflow, mock_task])
 
         mock_ctx_result = MagicMock()
-        mock_ctx_result.scalar_one.return_value = 0
+        mock_ctx_result.scalar_one_or_none.return_value = None
         mock_evt_result = MagicMock()
         mock_evt_result.scalar_one.return_value = 0
         session.execute = AsyncMock(side_effect=[mock_ctx_result, mock_evt_result])
