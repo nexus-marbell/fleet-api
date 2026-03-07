@@ -567,7 +567,7 @@ class TestInvalidStatusTransition:
             "fleet_api.tasks.routes.process_sidecar_event",
             new_callable=AsyncMock,
             side_effect=StateError(
-                code=ErrorCode.TASK_NOT_PAUSABLE,
+                code=ErrorCode.INVALID_STATE_TRANSITION,
                 message="Cannot transition task 'task-a1b2c3d4' from 'completed' to 'running'.",
             ),
         ):
@@ -584,7 +584,7 @@ class TestInvalidStatusTransition:
 
         assert response.status_code == 409
         data = response.json()
-        assert data["code"] == "TASK_NOT_PAUSABLE"
+        assert data["code"] == "INVALID_STATE_TRANSITION"
 
 
 # ---------------------------------------------------------------------------

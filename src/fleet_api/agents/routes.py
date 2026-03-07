@@ -274,6 +274,7 @@ async def get_pending_tasks(
     return {
         "data": data,
         "_links": {
+            # HATEOAS _links: object form {"href": ...} per Agentic API Standard §2 (spec showed plain string)
             "self": {"href": f"/agents/{agent_id}/tasks/pending"},
         },
     }

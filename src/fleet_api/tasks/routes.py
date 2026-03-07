@@ -151,7 +151,7 @@ def _cancel_response(
 async def run_task(
     workflow_id: str,
     body: TaskRunRequest,
-    agent: AuthenticatedAgent | None = Depends(require_auth),
+    agent: AuthenticatedAgent = Depends(require_auth),
     service: TaskService = Depends(get_task_service),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> Any:
@@ -160,11 +160,6 @@ async def run_task(
     Returns 202 Accepted with a task handle for new tasks.
     Returns 200 OK for idempotent replays (same key + same input).
     """
-    if agent is None:
-        raise RuntimeError(
-            "require_auth returned None on a protected route"
-        )
-
     effective_idempotency_key = idempotency_key or body.idempotency_key
 
     task, workflow, is_replay = await service.create_task(
@@ -195,12 +190,10 @@ async def run_task(
 async def get_task(
     workflow_id: str,
     task_id: str,
-    agent: AuthenticatedAgent | None = Depends(require_auth),
+    agent: AuthenticatedAgent = Depends(require_auth),
     service: TaskService = Depends(get_task_service),
 ) -> dict[str, Any]:
     """Get a single task by ID within a workflow."""
-    if agent is None:
-        raise RuntimeError("require_auth dependency returned None on a protected route")
     task = await service.get_task(workflow_id, task_id)
     return task_to_detail_response(task)
 
@@ -215,13 +208,10 @@ async def list_tasks(
     until: str | None = Query(None, description="ISO 8601 end time (inclusive)"),
     limit: int = Query(20, ge=1, le=100, description="Max results per page"),
     cursor: str | None = Query(None, description="Pagination cursor from previous response"),
-    agent: AuthenticatedAgent | None = Depends(require_auth),
+    agent: AuthenticatedAgent = Depends(require_auth),
     service: TaskService = Depends(get_task_service),
 ) -> dict[str, Any]:
     """List tasks for a workflow with filtering and cursor pagination."""
-    if agent is None:
-        raise RuntimeError("require_auth dependency returned None on a protected route")
-
     tasks, next_cursor, has_more, total_count = await service.list_tasks(
         workflow_id=workflow_id,
         status=status,
@@ -278,13 +268,10 @@ async def cancel_task_endpoint(
     workflow_id: str,
     task_id: str,
     body: TaskCancelRequest | None = None,
-    agent: AuthenticatedAgent | None = Depends(require_auth),
+    agent: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Cancel a task. Caller must be the task principal or workflow owner."""
-    if agent is None:
-        raise RuntimeError("require_auth dependency returned None on a protected route")
-
     reason = body.reason if body is not None else None
 
     task = await cancel_task(
@@ -307,7 +294,7 @@ async def cancel_task_endpoint(
 async def post_task_event(
     task_id: str,
     body: TaskEventRequest,
-    agent: AuthenticatedAgent | None = Depends(require_auth),
+    agent: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Receive an execution event from the sidecar.
@@ -315,9 +302,6 @@ async def post_task_event(
     Updates task status, progress, or result based on event_type.
     Only the task's executor agent may post events.
     """
-    if agent is None:
-        raise RuntimeError("require_auth dependency returned None on a protected route")
-
     event, task = await process_sidecar_event(
         session=session,
         task_id=task_id,
@@ -334,6 +318,7 @@ async def post_task_event(
         "event_type": event.event_type,
         "sequence": event.sequence,
         "created_at": event.created_at.isoformat() if event.created_at else None,
+        # HATEOAS _links: object form {"href": ...} per Agentic API Standard §2 (spec showed plain string)
         "_links": {
             "task": {"href": f"/workflows/{task.workflow_id}/tasks/{task.id}"},
             "events": {"href": f"/tasks/{task.id}/events"},

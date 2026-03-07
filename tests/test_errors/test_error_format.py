@@ -75,6 +75,7 @@ class TestErrorCodeStatusMapping:
             ErrorCode.AGENT_SUSPENDED: 503,
             ErrorCode.BAD_GATEWAY: 502,
             ErrorCode.DEPRECATED_PATH: 301,
+            ErrorCode.INVALID_STATE_TRANSITION: 409,
             ErrorCode.TASK_NOT_PAUSABLE: 409,
             ErrorCode.TASK_NOT_PAUSED: 409,
             ErrorCode.PAUSE_TIMEOUT: 408,
@@ -89,14 +90,14 @@ class TestErrorCodeStatusMapping:
                 f"{code} should map to {status}"
             )
 
-    def test_all_24_error_codes_have_status(self) -> None:
+    def test_all_error_codes_have_status(self) -> None:
         """Every ErrorCode member has an entry in ERROR_STATUS_CODES."""
         for code in ErrorCode:
             assert code in ERROR_STATUS_CODES, (
                 f"{code} missing from ERROR_STATUS_CODES"
             )
-        assert len(ErrorCode) == 25, (
-            f"Expected 25 error codes, got {len(ErrorCode)}"
+        assert len(ErrorCode) == 26, (
+            f"Expected 26 error codes, got {len(ErrorCode)}"
         )
 
     def test_custom_http_status_override(self) -> None:

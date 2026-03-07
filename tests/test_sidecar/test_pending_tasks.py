@@ -283,6 +283,33 @@ class TestPendingTasksPriorityOrdering:
         assert data["data"][2]["task_id"] == "task-low"
         assert data["data"][2]["priority"] == "low"
 
+    @pytest.mark.asyncio
+    async def test_critical_before_high_priority(self) -> None:
+        """CRITICAL priority tasks appear before HIGH priority tasks."""
+        app = _create_test_app()
+
+        tasks = [
+            _make_task(task_id="task-critical", priority=TaskPriority.CRITICAL),
+            _make_task(task_id="task-high", priority=TaskPriority.HIGH),
+        ]
+
+        with patch.object(
+            __import__("fleet_api.tasks.service", fromlist=["TaskService"]).TaskService,
+            "get_pending_tasks",
+            new_callable=AsyncMock,
+            return_value=tasks,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get(f"/agents/{AGENT_ID}/tasks/pending")
+
+        data = response.json()
+        assert len(data["data"]) == 2
+        assert data["data"][0]["task_id"] == "task-critical"
+        assert data["data"][0]["priority"] == "critical"
+        assert data["data"][1]["task_id"] == "task-high"
+        assert data["data"][1]["priority"] == "high"
+
 
 # ---------------------------------------------------------------------------
 # HATEOAS links

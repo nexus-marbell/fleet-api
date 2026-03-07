@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,6 +26,8 @@ from fleet_api.errors import (
 from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
 from fleet_api.tasks.state_machine import InvalidStateTransition
 from fleet_api.workflows.models import Workflow
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -289,7 +292,7 @@ async def cancel_task(
         task.transition_to(TaskStatus.CANCELLED)
     except InvalidStateTransition:
         raise StateError(
-            code=ErrorCode.TASK_NOT_PAUSABLE,
+            code=ErrorCode.INVALID_STATE_TRANSITION,
             message=(
                 f"Task '{task_id}' cannot be cancelled. "
                 f"Current status: '{task.status.value}'. "
@@ -762,7 +765,7 @@ async def process_sidecar_event(
     now = datetime.now(UTC)
 
     if event_type == "status":
-        # Transition the task status
+        # Phase 1: executor trusted for all status transitions. Phase 2: restrict to running/paused.
         new_status_str = data.get("status", "")
         try:
             new_status = TaskStatus(new_status_str)
@@ -777,7 +780,7 @@ async def process_sidecar_event(
             task.transition_to(new_status)
         except InvalidStateTransition:
             raise StateError(
-                code=ErrorCode.TASK_NOT_PAUSABLE,
+                code=ErrorCode.INVALID_STATE_TRANSITION,
                 message=(
                     f"Cannot transition task '{task_id}' from "
                     f"'{task.status.value}' to '{new_status_str}'."
@@ -791,7 +794,7 @@ async def process_sidecar_event(
             task.transition_to(TaskStatus.COMPLETED)
         except InvalidStateTransition:
             raise StateError(
-                code=ErrorCode.TASK_NOT_PAUSABLE,
+                code=ErrorCode.INVALID_STATE_TRANSITION,
                 message=(
                     f"Cannot transition task '{task_id}' from "
                     f"'{task.status.value}' to 'completed'."
@@ -810,18 +813,31 @@ async def process_sidecar_event(
             task.transition_to(TaskStatus.FAILED)
         except InvalidStateTransition:
             raise StateError(
-                code=ErrorCode.TASK_NOT_PAUSABLE,
+                code=ErrorCode.INVALID_STATE_TRANSITION,
                 message=(
                     f"Cannot transition task '{task_id}' from "
                     f"'{task.status.value}' to 'failed'."
                 ),
             )
+        if "error_code" not in data or "message" not in data:
+            logger.warning(
+                "Failed event for task '%s' missing fields: error_code=%s, message=%s",
+                task_id,
+                "present" if "error_code" in data else "MISSING",
+                "present" if "message" in data else "MISSING",
+            )
         task.result = {"error_code": data.get("error_code"), "message": data.get("message")}
 
     elif event_type == "progress":
+        if "progress" not in data:
+            raise InputValidationError(
+                code=ErrorCode.INVALID_INPUT,
+                message="Progress event requires a 'progress' field in data.",
+                suggestion="Include 'progress' (0-100) in the event data payload.",
+            )
         if task.metadata_ is None:
             task.metadata_ = {}
-        task.metadata_["progress"] = data.get("progress", 0)
+        task.metadata_["progress"] = data["progress"]
         if data.get("message"):
             task.metadata_["progress_message"] = data["message"]
 
