@@ -1,7 +1,7 @@
-"""Task API routes — dispatch, status, lifecycle.
+"""Task API routes — dispatch, read, and list endpoints.
 
-Routes are defined with full paths (e.g. /workflows/{workflow_id}/run)
-because L3 task endpoints nest under /workflows/{id}/ per the RFC.
+Routes use full paths (e.g. /workflows/{workflow_id}/run) because task
+endpoints nest under /workflows/{id}/ per the RFC.
 The router is mounted WITHOUT a prefix in app.py.
 """
 
@@ -9,14 +9,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
-from fleet_api.tasks.service import TaskService
+from fleet_api.tasks.service import (
+    TaskService,
+    task_to_detail_response,
+    task_to_summary_response,
+)
 
 router = APIRouter(tags=["tasks"])
 
@@ -83,7 +87,6 @@ async def run_task(
             "require_auth returned None on a protected route"
         )
 
-    # Header takes precedence over body for idempotency key
     effective_idempotency_key = idempotency_key or body.idempotency_key
 
     task, workflow, is_replay = await service.create_task(
@@ -108,3 +111,85 @@ async def run_task(
         return JSONResponse(status_code=200, content=response_data)
 
     return JSONResponse(status_code=202, content=response_data)
+
+
+@router.get("/workflows/{workflow_id}/tasks/{task_id}")
+async def get_task(
+    workflow_id: str,
+    task_id: str,
+    agent: AuthenticatedAgent | None = Depends(require_auth),
+    service: TaskService = Depends(get_task_service),
+) -> dict[str, Any]:
+    """Get a single task by ID within a workflow."""
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
+    task = await service.get_task(workflow_id, task_id)
+    return task_to_detail_response(task)
+
+
+@router.get("/workflows/{workflow_id}/tasks")
+async def list_tasks(
+    workflow_id: str,
+    status: str | None = Query(None, description="Filter by task status"),
+    priority: str | None = Query(None, description="Filter by task priority"),
+    caller: str | None = Query(None, description="Filter by calling agent ID"),
+    since: str | None = Query(None, description="ISO 8601 start time (inclusive)"),
+    until: str | None = Query(None, description="ISO 8601 end time (inclusive)"),
+    limit: int = Query(20, ge=1, le=100, description="Max results per page"),
+    cursor: str | None = Query(None, description="Pagination cursor from previous response"),
+    agent: AuthenticatedAgent | None = Depends(require_auth),
+    service: TaskService = Depends(get_task_service),
+) -> dict[str, Any]:
+    """List tasks for a workflow with filtering and cursor pagination."""
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
+
+    tasks, next_cursor, has_more, total_count = await service.list_tasks(
+        workflow_id=workflow_id,
+        status=status,
+        priority=priority,
+        caller=caller,
+        since=since,
+        until=until,
+        cursor=cursor,
+        limit=limit,
+    )
+
+    data = [task_to_summary_response(t) for t in tasks]
+
+    params: list[str] = []
+    if status is not None:
+        params.append(f"status={status}")
+    if priority is not None:
+        params.append(f"priority={priority}")
+    if caller is not None:
+        params.append(f"caller={caller}")
+    if since is not None:
+        params.append(f"since={since}")
+    if until is not None:
+        params.append(f"until={until}")
+    params.append(f"limit={limit}")
+    self_href = f"/workflows/{workflow_id}/tasks"
+    if params:
+        self_href += "?" + "&".join(params)
+
+    response_links: dict[str, Any] = {
+        "self": {"href": self_href},
+        "workflow": {"href": f"/workflows/{workflow_id}"},
+    }
+    if next_cursor:
+        response_links["next"] = {
+            "href": f"/workflows/{workflow_id}/tasks?cursor={next_cursor}&limit={limit}"
+        }
+
+    response: dict[str, Any] = {
+        "data": data,
+        "pagination": {
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "total_count": total_count,
+            "limit": limit,
+        },
+        "_links": response_links,
+    }
+    return response
