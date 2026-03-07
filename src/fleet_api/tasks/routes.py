@@ -318,7 +318,8 @@ async def post_task_event(
         "event_type": event.event_type,
         "sequence": event.sequence,
         "created_at": event.created_at.isoformat() if event.created_at else None,
-        # HATEOAS _links: object form {"href": ...} per Agentic API Standard §2 (spec showed plain string)
+        # HATEOAS _links: object form {"href": ...} per Agentic API Standard §2
+        # (spec showed plain string — implementation is more correct)
         "_links": {
             "task": {"href": f"/workflows/{task.workflow_id}/tasks/{task.id}"},
             "events": {"href": f"/tasks/{task.id}/events"},

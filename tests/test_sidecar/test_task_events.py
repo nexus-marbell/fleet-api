@@ -395,7 +395,10 @@ class TestSequenceValidation:
             new_callable=AsyncMock,
             side_effect=InputValidationError(
                 code=ErrorCode.INVALID_INPUT,
-                message="Sequence 1 is not greater than the last sequence 5 for task 'task-a1b2c3d4'.",
+                message=(
+                    "Sequence 1 is not greater than the last sequence 5"
+                    " for task 'task-a1b2c3d4'."
+                ),
                 suggestion="Use a sequence number greater than the previous event.",
             ),
         ):
@@ -625,7 +628,10 @@ class TestEventResponseFormat:
         assert response.status_code == 201
         data = response.json()
 
-        expected_fields = {"received", "event_id", "task_id", "event_type", "sequence", "created_at", "_links"}
+        expected_fields = {
+            "received", "event_id", "task_id", "event_type",
+            "sequence", "created_at", "_links",
+        }
         assert set(data.keys()) == expected_fields
 
         assert data["received"] is True

@@ -74,7 +74,7 @@ async def _run_poller(
 
 async def _main() -> None:
     """Start the poller and health server concurrently."""
-    config = SidecarConfig()  # type: ignore[call-arg]
+    config = SidecarConfig()
     logger.info(
         "Starting fleet agent sidecar: agent=%s api=%s port=%d",
         config.fleet_agent_id,

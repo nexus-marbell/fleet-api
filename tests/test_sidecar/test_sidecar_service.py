@@ -17,11 +17,9 @@ from fleet_api.errors import (
     ErrorCode,
     InputValidationError,
     NotFoundError,
-    StateError,
 )
-from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
+from fleet_api.tasks.models import Task, TaskPriority, TaskStatus
 from fleet_api.tasks.service import process_sidecar_event
-from fleet_api.tasks.state_machine import InvalidStateTransition
 
 # ---------------------------------------------------------------------------
 # Constants
