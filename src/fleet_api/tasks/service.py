@@ -553,6 +553,188 @@ async def count_context_injections(
 
 
 # ---------------------------------------------------------------------------
+# Redirect operation
+# ---------------------------------------------------------------------------
+
+
+async def redirect_task(
+    session: AsyncSession,
+    workflow_id: str,
+    task_id: str,
+    caller_agent_id: str,
+    reason: str,
+    new_input: dict[str, Any],
+    inherit_progress: bool = False,
+    priority: str | None = None,
+) -> tuple[Task, Task]:
+    """Redirect a running or paused task with new input.
+
+    Transitions the original task to REDIRECTED and creates a new task with
+    the provided new_input (replaces original input entirely).  Lineage is
+    tracked using the same parent_task_id / root_task_id / retask_depth
+    columns used by retask.
+
+    Args:
+        session: Database session.
+        workflow_id: Workflow the task belongs to.
+        task_id: Original task to redirect.
+        caller_agent_id: Agent requesting the redirect.
+        reason: Why the redirect is needed.
+        new_input: Input for the new task (replaces original input entirely).
+        inherit_progress: Whether new task inherits progress metadata.
+        priority: Optional priority override for the new task.
+
+    Returns:
+        (new_task, original_task) tuple.
+
+    Raises:
+        NotFoundError: Workflow or task not found.
+        AuthError: Caller is not the task principal or workflow owner.
+        StateError: Task is not in RUNNING or PAUSED state.
+    """
+    # 1. Fetch workflow
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise NotFoundError(
+            code=ErrorCode.WORKFLOW_NOT_FOUND,
+            message=f"Workflow '{workflow_id}' not found.",
+            suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+            links={"list": {"href": "/workflows"}},
+        )
+
+    # 2. Fetch task and verify it belongs to this workflow
+    task = await session.get(Task, task_id)
+    if task is None or task.workflow_id != workflow_id:
+        raise NotFoundError(
+            code=ErrorCode.TASK_NOT_FOUND,
+            message=f"Task '{task_id}' not found in workflow '{workflow_id}'.",
+            suggestion="Check the task ID. Use GET /workflows/{workflow_id}/tasks to list tasks.",
+            links={"workflow": {"href": f"/workflows/{workflow_id}"}},
+        )
+
+    # 3. Authorization: caller must be task principal or workflow owner
+    if caller_agent_id != task.principal_agent_id and caller_agent_id != workflow.owner_agent_id:
+        raise AuthError(
+            code=ErrorCode.NOT_AUTHORIZED,
+            message="Only the task caller or workflow owner may redirect this task.",
+            suggestion="Authenticate as the task's principal agent or the workflow owner.",
+        )
+
+    # 4. Validate task state (must be RUNNING or PAUSED)
+    if task.status not in (TaskStatus.RUNNING, TaskStatus.PAUSED):
+        raise StateError(
+            code=ErrorCode.REDIRECT_NOT_POSSIBLE,
+            message=(
+                f"Task '{task_id}' cannot be redirected. "
+                f"Current status: '{task.status.value}'. "
+                f"Only tasks with status 'running' or 'paused' can be redirected."
+            ),
+        )
+
+    # 5. Transition original task to REDIRECTED
+    old_status = task.status
+    task.transition_to(TaskStatus.REDIRECTED)
+
+    # 6. Determine lineage
+    root_task_id = task.root_task_id or task.id
+    new_retask_depth = task.retask_depth + 1
+
+    # 7. Resolve priority
+    if priority is not None:
+        try:
+            priority_enum = TaskPriority(priority)
+        except ValueError:
+            valid = ", ".join(p.value for p in TaskPriority)
+            raise InputValidationError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid priority '{priority}'. Must be one of: {valid}.",
+                suggestion=f"Use one of: {valid}.",
+            )
+    else:
+        priority_enum = (
+            task.priority
+            if isinstance(task.priority, TaskPriority)
+            else TaskPriority(task.priority)
+        )
+
+    # 8. Build metadata for new task
+    new_metadata: dict[str, Any] = {"redirect_reason": reason}
+    if inherit_progress and task.metadata_:
+        progress = task.metadata_.get("progress")
+        if progress is not None:
+            new_metadata["progress"] = progress
+        progress_message = task.metadata_.get("progress_message")
+        if progress_message is not None:
+            new_metadata["progress_message"] = progress_message
+
+    # 9. Create new task
+    new_task_id = f"task-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(UTC)
+
+    new_task = Task(
+        id=new_task_id,
+        workflow_id=workflow_id,
+        principal_agent_id=task.principal_agent_id,
+        executor_agent_id=task.executor_agent_id,
+        status=TaskStatus.ACCEPTED,
+        input=new_input,
+        priority=priority_enum,
+        timeout_seconds=task.timeout_seconds,
+        parent_task_id=task.id,
+        root_task_id=root_task_id,
+        retask_depth=new_retask_depth,
+        delegation_depth=task.delegation_depth,
+        created_at=now,
+        metadata_=new_metadata,
+    )
+    session.add(new_task)
+
+    # 10. Create status event on original task ("redirected")
+    max_seq_result = await session.execute(
+        select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+            TaskEvent.task_id == task.id
+        )
+    )
+    next_sequence = max_seq_result.scalar_one() + 1
+
+    event = TaskEvent(
+        task_id=task.id,
+        event_type="status",
+        data={
+            "from_status": old_status.value,
+            "to_status": "redirected",
+            "reason": reason,
+            "redirect_id": new_task_id,
+            "redirected_by": caller_agent_id,
+        },
+        sequence=next_sequence,
+        created_at=now,
+    )
+    session.add(event)
+
+    # 11. Create initial event on new task
+    new_event = TaskEvent(
+        task_id=new_task_id,
+        event_type="created",
+        sequence=1,
+        data={
+            "status": "accepted",
+            "caller": task.principal_agent_id,
+            "redirect_of": task.id,
+        },
+        created_at=now,
+    )
+    session.add(new_event)
+
+    # 12. Commit
+    await session.commit()
+    await session.refresh(new_task)
+    await session.refresh(task)
+
+    return new_task, task
+
+
+# ---------------------------------------------------------------------------
 # Standalone pause operation
 # ---------------------------------------------------------------------------
 
