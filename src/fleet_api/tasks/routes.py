@@ -22,8 +22,12 @@ from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
 from fleet_api.tasks.models import Task
 from fleet_api.tasks.service import (
     TaskService,
+    build_lineage_chain,
+    build_task_links,
     cancel_task,
+    count_context_injections,
     process_sidecar_event,
+    retask_task,
     task_to_detail_response,
     task_to_summary_response,
 )
@@ -63,6 +67,21 @@ class TaskCancelRequest(BaseModel):
     """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/cancel."""
 
     reason: str | None = None
+
+
+class RetaskRefinement(BaseModel):
+    """Refinement instructions for retasking."""
+
+    message: str = Field(..., description="What is wrong or missing")
+    additional_input: dict[str, Any] | None = None
+    constraints: dict[str, Any] | None = None
+
+
+class TaskRetaskRequest(BaseModel):
+    """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/retask."""
+
+    refinement: RetaskRefinement
+    priority: str | None = None
 
 
 class TaskEventRequest(BaseModel):
@@ -285,6 +304,83 @@ async def cancel_task_endpoint(
     )
 
     return _cancel_response(task, cancelled_by=agent.agent_id, reason=reason)
+
+
+# ---------------------------------------------------------------------------
+# POST /workflows/{workflow_id}/tasks/{task_id}/retask — Phase 2 Unit 5
+# ---------------------------------------------------------------------------
+
+
+@router.post("/workflows/{workflow_id}/tasks/{task_id}/retask", status_code=201)
+async def retask_task_endpoint(
+    workflow_id: str,
+    task_id: str,
+    body: TaskRetaskRequest,
+    agent: AuthenticatedAgent = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """Retask a completed or failed task with refinement instructions.
+
+    Creates a new task linked to the original with lineage tracking.
+    Returns 201 Created with the new task and lineage information.
+    """
+    refinement_dict = body.refinement.model_dump(exclude_none=True)
+
+    new_task, original_task = await retask_task(
+        session=session,
+        workflow_id=workflow_id,
+        task_id=task_id,
+        caller_agent_id=agent.agent_id,
+        refinement=refinement_dict,
+        priority=body.priority,
+    )
+
+    # Build lineage chain
+    chain = await build_lineage_chain(session, new_task)
+
+    # Count context injections on original task
+    injected_count = await count_context_injections(session, original_task.id)
+
+    # Build response
+    status_value = (
+        new_task.status.value
+        if hasattr(new_task.status, "value")
+        else str(new_task.status)
+    )
+    priority_value = (
+        new_task.priority.value
+        if hasattr(new_task.priority, "value")
+        else str(new_task.priority)
+    )
+
+    response_data = {
+        "task_id": new_task.id,
+        "parent_task_id": new_task.parent_task_id,
+        "workflow_id": new_task.workflow_id,
+        "status": status_value,
+        "caller": new_task.principal_agent_id,
+        "executor": new_task.executor_agent_id,
+        "priority": priority_value,
+        "created_at": new_task.created_at.isoformat() if new_task.created_at else None,
+        "lineage": {
+            "depth": new_task.retask_depth,
+            "root_task_id": new_task.root_task_id,
+            "chain": chain,
+        },
+        "inherited_context": {
+            "original_input": True,
+            "original_result": original_task.result is not None,
+            "injected_contexts": injected_count,
+        },
+        "_links": build_task_links(new_task.id, workflow_id, status_value),
+    }
+
+    # Add parent link
+    response_data["_links"]["parent"] = {
+        "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
+    }
+
+    return JSONResponse(status_code=201, content=response_data)
 
 
 # ---------------------------------------------------------------------------
