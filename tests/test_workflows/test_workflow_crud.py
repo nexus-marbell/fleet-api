@@ -141,9 +141,14 @@ class TestCreateWorkflow:
         assert data["status"] == "active"
         assert "_links" in data
         assert data["_links"]["self"]["href"] == "/workflows/wf-test"
-        # Pattern 13: onboarding steps
+        # Pattern 13: onboarding steps (flat list per spec)
         assert "onboarding" in data
-        assert len(data["onboarding"]["steps"]) == 3
+        assert isinstance(data["onboarding"], list)
+        assert len(data["onboarding"]) == 2
+        assert data["onboarding"][0]["method"] == "GET"
+        assert data["onboarding"][0]["expected_status"] == 200
+        assert data["onboarding"][1]["method"] == "POST"
+        assert data["onboarding"][1]["expected_status"] == 202
 
     @pytest.mark.asyncio
     async def test_create_workflow_conflict(
@@ -163,7 +168,7 @@ class TestCreateWorkflow:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/workflows",
-                json={"id": "wf-taken", "result_retention_days": 30},
+                json={"id": "wf-taken", "name": "Taken Workflow", "result_retention_days": 30},
             )
 
         assert response.status_code == 409
@@ -188,7 +193,7 @@ class TestCreateWorkflow:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/workflows",
-                json={"id": "", "result_retention_days": 30},
+                json={"id": "", "name": "Empty ID Workflow", "result_retention_days": 30},
             )
 
         assert response.status_code == 422
@@ -218,6 +223,7 @@ class TestCreateWorkflow:
                 "/workflows",
                 json={
                     "id": "wf-test",
+                    "name": "Test Workflow",
                     "input_schema": {
                         "type": "object",
                         "properties": {"code": {"type": "string"}},
@@ -247,7 +253,7 @@ class TestListWorkflows:
         self, app: Any, mock_service: MagicMock
     ) -> None:
         """GET /workflows with no data returns empty list."""
-        mock_service.list_workflows = AsyncMock(return_value=([], None, False))
+        mock_service.list_workflows = AsyncMock(return_value=([], None, False, 0))
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -258,6 +264,8 @@ class TestListWorkflows:
         assert data["data"] == []
         assert data["pagination"]["has_more"] is False
         assert data["pagination"]["next_cursor"] is None
+        assert data["pagination"]["total_count"] == 0
+        assert data["pagination"]["limit"] == 20
         assert "_links" in data
 
     @pytest.mark.asyncio
@@ -268,7 +276,7 @@ class TestListWorkflows:
         wf1 = _make_workflow(workflow_id="wf-alpha", name="Alpha")
         wf2 = _make_workflow(workflow_id="wf-beta", name="Beta")
         mock_service.list_workflows = AsyncMock(
-            return_value=([wf1, wf2], None, False)
+            return_value=([wf1, wf2], None, False, 2)
         )
 
         transport = ASGITransport(app=app)
@@ -288,7 +296,7 @@ class TestListWorkflows:
         """GET /workflows with has_more=True includes next cursor."""
         wf1 = _make_workflow(workflow_id="wf-alpha")
         mock_service.list_workflows = AsyncMock(
-            return_value=([wf1], "eyJpZCI6ICJ3Zi1hbHBoYSJ9", True)
+            return_value=([wf1], "eyJpZCI6ICJ3Zi1hbHBoYSJ9", True, 5)
         )
 
         transport = ASGITransport(app=app)
@@ -299,6 +307,8 @@ class TestListWorkflows:
         data = response.json()
         assert data["pagination"]["has_more"] is True
         assert data["pagination"]["next_cursor"] is not None
+        assert data["pagination"]["total_count"] == 5
+        assert data["pagination"]["limit"] == 1
         assert "next" in data["_links"]
 
     @pytest.mark.asyncio
@@ -306,7 +316,7 @@ class TestListWorkflows:
         self, app: Any, mock_service: MagicMock
     ) -> None:
         """GET /workflows passes filter params to service."""
-        mock_service.list_workflows = AsyncMock(return_value=([], None, False))
+        mock_service.list_workflows = AsyncMock(return_value=([], None, False, 0))
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -347,7 +357,9 @@ class TestGetWorkflow:
         assert data["id"] == "wf-test"
         assert data["name"] == "Test Workflow"
         assert data["_links"]["self"]["href"] == "/workflows/wf-test"
-        assert data["_links"]["runs"]["href"] == "/tasks?workflow_id=wf-test"
+        assert data["_links"]["tasks"]["href"] == "/tasks?workflow_id=wf-test"
+        assert data["_links"]["run"]["href"] == "/workflows/wf-test/run"
+        assert data["_links"]["run"]["method"] == "POST"
 
     @pytest.mark.asyncio
     async def test_get_workflow_not_found(
@@ -575,14 +587,15 @@ class TestResponseStructure:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/workflows",
-                json={"id": "wf-test", "result_retention_days": 30},
+                json={"id": "wf-test", "name": "Test Workflow", "result_retention_days": 30},
             )
 
         data = response.json()
         links = data["_links"]
         assert "self" in links
+        assert "run" in links
+        assert "tasks" in links
         assert "update" in links
-        assert "runs" in links
         assert "owner" in links
 
     @pytest.mark.asyncio
@@ -590,7 +603,7 @@ class TestResponseStructure:
         self, app: Any, mock_service: MagicMock
     ) -> None:
         """GET /workflows response includes _links."""
-        mock_service.list_workflows = AsyncMock(return_value=([], None, False))
+        mock_service.list_workflows = AsyncMock(return_value=([], None, False, 0))
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -599,4 +612,4 @@ class TestResponseStructure:
         data = response.json()
         assert "_links" in data
         assert "self" in data["_links"]
-        assert "create" in data["_links"]
+        assert "register" in data["_links"]

@@ -8,10 +8,10 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fleet_api.errors import ConflictError, ErrorCode, InputValidationError, NotFoundError
+from fleet_api.errors import AuthError, ConflictError, ErrorCode, InputValidationError, NotFoundError
 from fleet_api.workflows.models import Workflow, WorkflowStatus
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,10 @@ def decode_cursor(cursor: str) -> str:
     try:
         data = json.loads(base64.b64decode(cursor))
         return str(data["id"])
-    except (json.JSONDecodeError, KeyError, Exception) as e:
+    except (ValueError, KeyError) as e:
+        # base64.b64decode raises binascii.Error (ValueError subclass)
+        # json.loads raises json.JSONDecodeError (ValueError subclass)
+        # data["id"] raises KeyError
         raise InputValidationError(
             code=ErrorCode.INVALID_INPUT,
             message="Invalid pagination cursor.",
@@ -99,7 +102,7 @@ class WorkflowService:
         self,
         workflow_id: str,
         owner_agent_id: str,
-        name: str | None = None,
+        name: str,
         description: str | None = None,
         tags: list[str] | None = None,
         input_schema: dict[str, Any] | None = None,
@@ -163,12 +166,12 @@ class WorkflowService:
         tag: str | None = None,
         limit: int = 20,
         cursor: str | None = None,
-    ) -> tuple[list[Workflow], str | None, bool]:
+    ) -> tuple[list[Workflow], str | None, bool, int]:
         """List workflows with filtering and cursor pagination.
 
-        Returns (workflows, next_cursor, has_more).
+        Returns (workflows, next_cursor, has_more, total_count).
         """
-        stmt = select(Workflow).order_by(Workflow.id)
+        base_stmt = select(Workflow).order_by(Workflow.id)
 
         # Apply filters
         if status is not None:
@@ -180,19 +183,24 @@ class WorkflowService:
                     message=f"Invalid status filter '{status}'.",
                     suggestion="Use 'active' or 'deprecated'.",
                 )
-            stmt = stmt.where(Workflow.status == status_enum)
+            base_stmt = base_stmt.where(Workflow.status == status_enum)
         else:
             # Default to active
-            stmt = stmt.where(Workflow.status == WorkflowStatus.ACTIVE)
+            base_stmt = base_stmt.where(Workflow.status == WorkflowStatus.ACTIVE)
 
         if owner is not None:
-            stmt = stmt.where(Workflow.owner_agent_id == owner)
+            base_stmt = base_stmt.where(Workflow.owner_agent_id == owner)
 
         if tag is not None:
             # JSONB contains — check if tags array contains the value
-            stmt = stmt.where(Workflow.tags.op("@>")(json.dumps([tag])))
+            base_stmt = base_stmt.where(Workflow.tags.op("@>")(json.dumps([tag])))
+
+        # Total count (before cursor/limit, after filters)
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_count = (await self.session.execute(count_stmt)).scalar_one()
 
         # Apply cursor
+        stmt = base_stmt
         if cursor is not None:
             cursor_id = decode_cursor(cursor)
             stmt = stmt.where(Workflow.id > cursor_id)
@@ -210,7 +218,7 @@ class WorkflowService:
         if has_more and workflows:
             next_cursor = encode_cursor(workflows[-1].id)
 
-        return workflows, next_cursor, has_more
+        return workflows, next_cursor, has_more, total_count
 
     async def update_workflow(
         self,
@@ -236,8 +244,6 @@ class WorkflowService:
 
         # Authorization: only the owner can update
         if workflow.owner_agent_id != caller_agent_id:
-            from fleet_api.errors import AuthError
-
             raise AuthError(
                 code=ErrorCode.NOT_AUTHORIZED,
                 message="Only the workflow owner can update this workflow.",

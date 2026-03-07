@@ -19,8 +19,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add name column to workflows table."""
-    op.add_column("workflows", sa.Column("name", sa.String(256), nullable=True))
+    """Add name column to workflows table (required, non-nullable)."""
+    op.add_column(
+        "workflows",
+        sa.Column("name", sa.String(256), nullable=False, server_default="Unnamed"),
+    )
+    # Remove the server_default after backfilling so the app enforces it
+    op.alter_column("workflows", "name", server_default=None)
 
 
 def downgrade() -> None:

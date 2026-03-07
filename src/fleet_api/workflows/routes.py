@@ -25,8 +25,8 @@ class WorkflowCreateRequest(BaseModel):
     """Request body for POST /workflows."""
 
     id: str = Field(..., description="Unique workflow identifier", max_length=128)
-    name: str | None = Field(
-        None, description="Human-readable workflow name", max_length=256
+    name: str = Field(
+        ..., description="Human-readable workflow name", max_length=256
     )
     description: str | None = Field(None, description="Workflow description")
     tags: list[str] | None = Field(None, description="Workflow tags for discovery")
@@ -93,8 +93,9 @@ def _workflow_to_response(workflow: Workflow) -> dict[str, Any]:
         "updated_at": workflow.updated_at.isoformat() if workflow.updated_at else None,
         "_links": {
             "self": {"href": f"/workflows/{workflow.id}"},
+            "run": {"href": f"/workflows/{workflow.id}/run", "method": "POST"},
+            "tasks": {"href": f"/tasks?workflow_id={workflow.id}"},
             "update": {"href": f"/workflows/{workflow.id}", "method": "PUT"},
-            "runs": {"href": f"/tasks?workflow_id={workflow.id}"},
             "owner": {"href": f"/agents/{workflow.owner_agent_id}"},
         },
     }
@@ -104,7 +105,7 @@ def _workflow_links() -> dict[str, Any]:
     """Common _links for workflow list responses."""
     return {
         "self": {"href": "/workflows"},
-        "create": {"href": "/workflows", "method": "POST"},
+        "register": {"href": "/workflows", "method": "POST"},
     }
 
 
@@ -120,7 +121,8 @@ async def create_workflow(
     service: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     """Create a new workflow. Owner = authenticated agent."""
-    assert agent is not None  # Protected route -- always authenticated
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
     workflow = await service.create_workflow(
         workflow_id=body.id,
         owner_agent_id=agent.agent_id,
@@ -134,28 +136,23 @@ async def create_workflow(
     )
     response = _workflow_to_response(workflow)
     # Pattern 13: onboarding steps for newly created workflow
-    response["onboarding"] = {
-        "steps": [
-            {
-                "step": 1,
-                "action": "Submit a task",
-                "endpoint": "POST /tasks",
-                "description": f"Submit a task using workflow_id='{workflow.id}'.",
-            },
-            {
-                "step": 2,
-                "action": "Monitor task status",
-                "endpoint": "GET /tasks/{task_id}",
-                "description": "Poll the task endpoint for status updates.",
-            },
-            {
-                "step": 3,
-                "action": "Retrieve results",
-                "endpoint": "GET /tasks/{task_id}",
-                "description": "Fetch completed task results from the task endpoint.",
-            },
-        ]
-    }
+    response["onboarding"] = [
+        {
+            "step": 1,
+            "action": "Verify your workflow is listed",
+            "method": "GET",
+            "endpoint": f"/workflows/{workflow.id}",
+            "expected_status": 200,
+        },
+        {
+            "step": 2,
+            "action": "Run a test invocation",
+            "method": "POST",
+            "endpoint": f"/workflows/{workflow.id}/run",
+            "headers": {"Authorization": "Signature <agent_id>:<signature>"},
+            "expected_status": 202,
+        },
+    ]
     return response
 
 
@@ -174,8 +171,9 @@ async def list_workflows(
     service: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     """List workflows with filtering and cursor pagination."""
-    assert agent is not None  # Protected route
-    workflows, next_cursor, has_more = await service.list_workflows(
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
+    workflows, next_cursor, has_more, total_count = await service.list_workflows(
         status=status,
         owner=owner,
         tag=tag,
@@ -188,6 +186,8 @@ async def list_workflows(
         "pagination": {
             "next_cursor": next_cursor,
             "has_more": has_more,
+            "total_count": total_count,
+            "limit": limit,
         },
         "_links": _workflow_links(),
     }
@@ -205,7 +205,8 @@ async def get_workflow(
     service: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     """Get a single workflow by ID."""
-    assert agent is not None  # Protected route
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
     workflow = await service.get_workflow(workflow_id)
     return _workflow_to_response(workflow)
 
@@ -218,7 +219,8 @@ async def update_workflow(
     service: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     """Update workflow metadata. Owner only."""
-    assert agent is not None  # Protected route
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
 
     # Determine which fields were actually provided in the request body
     # (to distinguish "not provided" from "set to null")
