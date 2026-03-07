@@ -553,6 +553,307 @@ async def count_context_injections(
 
 
 # ---------------------------------------------------------------------------
+# Standalone pause operation
+# ---------------------------------------------------------------------------
+
+
+async def pause_task(
+    session: AsyncSession,
+    workflow_id: str,
+    task_id: str,
+    paused_by: str,
+    reason: str | None = None,
+) -> tuple[Task, TaskEvent]:
+    """Pause a running task.
+
+    Args:
+        session: Database session.
+        workflow_id: Workflow the task belongs to.
+        task_id: Task to pause.
+        paused_by: Agent requesting the pause.
+        reason: Optional human-readable reason.
+
+    Returns:
+        (task, event) tuple — the paused Task and the created TaskEvent.
+
+    Raises:
+        NotFoundError: Workflow or task not found.
+        AuthError: Caller is not the task principal or workflow owner.
+        StateError: Task is not in RUNNING state.
+    """
+    # 1. Fetch workflow
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise NotFoundError(
+            code=ErrorCode.WORKFLOW_NOT_FOUND,
+            message=f"Workflow '{workflow_id}' not found.",
+            suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+            links={"list": {"href": "/workflows"}},
+        )
+
+    # 2. Fetch task and verify it belongs to this workflow
+    task = await session.get(Task, task_id)
+    if task is None or task.workflow_id != workflow_id:
+        raise NotFoundError(
+            code=ErrorCode.TASK_NOT_FOUND,
+            message=f"Task '{task_id}' not found in workflow '{workflow_id}'.",
+            suggestion="Check the task ID. Use GET /workflows/{workflow_id}/tasks to list tasks.",
+            links={"workflow": {"href": f"/workflows/{workflow_id}"}},
+        )
+
+    # 3. Authorization: caller must be task principal or workflow owner
+    if paused_by != task.principal_agent_id and paused_by != workflow.owner_agent_id:
+        raise AuthError(
+            code=ErrorCode.NOT_AUTHORIZED,
+            message="Only the task caller or workflow owner may pause this task.",
+            suggestion="Authenticate as the task's principal agent or the workflow owner.",
+        )
+
+    # 4. Validate task is RUNNING (not just "can transition to PAUSED")
+    if task.status != TaskStatus.RUNNING:
+        raise StateError(
+            code=ErrorCode.TASK_NOT_PAUSABLE,
+            message=f"Task '{task_id}' cannot be paused. Current status: '{task.status.value}'.",
+            suggestion="Only tasks with status 'running' can be paused.",
+        )
+
+    # 5. Transition to PAUSED
+    old_status = task.status
+    try:
+        task.transition_to(TaskStatus.PAUSED)
+    except InvalidStateTransition:
+        raise StateError(
+            code=ErrorCode.TASK_NOT_PAUSABLE,
+            message=f"Task '{task_id}' cannot be paused. Current status: '{task.status.value}'.",
+            suggestion="Only tasks with status 'running' can be paused.",
+        )
+
+    # 6. Record paused_at
+    now = datetime.now(UTC)
+    task.paused_at = now
+
+    # 7. Store progress from metadata for the paused_state
+    progress = task.metadata_.get("progress", 0) if task.metadata_ else 0
+    progress_message = task.metadata_.get("progress_message") if task.metadata_ else None
+
+    # 8. Build paused_state
+    pause_ttl = settings.fleet_pause_ttl_seconds
+    expires_at = now + timedelta(seconds=pause_ttl)
+    paused_state = {
+        "progress": progress,
+        "message": progress_message,
+        "resumable": True,
+        "state_ttl_seconds": pause_ttl,
+        "expires_at": expires_at.isoformat(),
+    }
+
+    # 9. Create TaskEvent (pause_requested — informational for sidecar)
+    max_seq_result = await session.execute(
+        select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+            TaskEvent.task_id == task.id
+        )
+    )
+    next_sequence = max_seq_result.scalar_one() + 1
+
+    event = TaskEvent(
+        task_id=task.id,
+        event_type="pause_requested",
+        data={
+            "from_status": old_status.value,
+            "to_status": "paused",
+            "reason": reason,
+            "paused_by": paused_by,
+            "paused_state": paused_state,
+        },
+        sequence=next_sequence,
+    )
+    session.add(event)
+
+    # 10. Commit
+    await session.commit()
+    await session.refresh(task)
+    await session.refresh(event)
+
+    return task, event
+
+
+# ---------------------------------------------------------------------------
+# Standalone resume operation
+# ---------------------------------------------------------------------------
+
+
+async def resume_task(
+    session: AsyncSession,
+    workflow_id: str,
+    task_id: str,
+    resumed_by: str,
+    priority: str | None = None,
+) -> tuple[Task, TaskEvent]:
+    """Resume a paused task.
+
+    Args:
+        session: Database session.
+        workflow_id: Workflow the task belongs to.
+        task_id: Task to resume.
+        resumed_by: Agent requesting the resume.
+        priority: Optional priority override.
+
+    Returns:
+        (task, event) tuple — the resumed Task and the created TaskEvent.
+
+    Raises:
+        NotFoundError: Workflow or task not found.
+        AuthError: Caller is not the task principal or workflow owner.
+        StateError: Task is not in PAUSED state, or pause TTL has expired.
+    """
+    # 1. Fetch workflow
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise NotFoundError(
+            code=ErrorCode.WORKFLOW_NOT_FOUND,
+            message=f"Workflow '{workflow_id}' not found.",
+            suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+            links={"list": {"href": "/workflows"}},
+        )
+
+    # 2. Fetch task and verify it belongs to this workflow
+    task = await session.get(Task, task_id)
+    if task is None or task.workflow_id != workflow_id:
+        raise NotFoundError(
+            code=ErrorCode.TASK_NOT_FOUND,
+            message=f"Task '{task_id}' not found in workflow '{workflow_id}'.",
+            suggestion="Check the task ID. Use GET /workflows/{workflow_id}/tasks to list tasks.",
+            links={"workflow": {"href": f"/workflows/{workflow_id}"}},
+        )
+
+    # 3. Authorization: caller must be task principal or workflow owner
+    if resumed_by != task.principal_agent_id and resumed_by != workflow.owner_agent_id:
+        raise AuthError(
+            code=ErrorCode.NOT_AUTHORIZED,
+            message="Only the task caller or workflow owner may resume this task.",
+            suggestion="Authenticate as the task's principal agent or the workflow owner.",
+        )
+
+    # 4. Validate task is PAUSED
+    if task.status != TaskStatus.PAUSED:
+        raise StateError(
+            code=ErrorCode.TASK_NOT_PAUSED,
+            message=f"Task '{task_id}' cannot be resumed. Current status: '{task.status.value}'.",
+            suggestion="Only tasks with status 'paused' can be resumed.",
+        )
+
+    # 5. Check TTL hasn't expired
+    now = datetime.now(UTC)
+    if task.paused_at is not None:
+        elapsed = (now - task.paused_at).total_seconds()
+        if elapsed > settings.fleet_pause_ttl_seconds:
+            # Auto-cancel the task due to pause timeout
+            try:
+                task.transition_to(TaskStatus.CANCELLED)
+            except InvalidStateTransition:
+                pass  # Should not happen — PAUSED->CANCELLED is valid
+
+            # Create timeout event
+            max_seq_result = await session.execute(
+                select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+                    TaskEvent.task_id == task.id
+                )
+            )
+            next_sequence = max_seq_result.scalar_one() + 1
+
+            timeout_event = TaskEvent(
+                task_id=task.id,
+                event_type="status",
+                data={
+                    "from_status": "paused",
+                    "to_status": "cancelled",
+                    "reason": "PAUSE_TIMEOUT",
+                    "paused_duration_seconds": int(elapsed),
+                },
+                sequence=next_sequence,
+            )
+            session.add(timeout_event)
+            await session.commit()
+            await session.refresh(task)
+
+            raise StateError(
+                code=ErrorCode.PAUSE_TIMEOUT,
+                message=(
+                    f"Pause TTL expired for task '{task_id}'. "
+                    f"Task was paused for {int(elapsed)} seconds "
+                    f"(TTL: {settings.fleet_pause_ttl_seconds}s). "
+                    f"Task has been auto-cancelled."
+                ),
+                suggestion="Create a new task. The paused state has expired.",
+            )
+
+    # 6. Transition to RUNNING
+    old_status = task.status
+    try:
+        task.transition_to(TaskStatus.RUNNING)
+    except InvalidStateTransition:
+        raise StateError(
+            code=ErrorCode.TASK_NOT_PAUSED,
+            message=f"Task '{task_id}' cannot be resumed. Current status: '{task.status.value}'.",
+            suggestion="Only tasks with status 'paused' can be resumed.",
+        )
+
+    # 7. Calculate paused duration
+    paused_duration_seconds = (
+        int((now - task.paused_at).total_seconds()) if task.paused_at else 0
+    )
+
+    # 8. Clear paused_at (task is no longer paused)
+    task.paused_at = None
+
+    # 9. Optionally update priority
+    if priority is not None:
+        try:
+            priority_enum = TaskPriority(priority)
+            task.priority = priority_enum
+        except ValueError:
+            valid = ", ".join(p.value for p in TaskPriority)
+            raise InputValidationError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid priority '{priority}'. Must be one of: {valid}.",
+                suggestion=f"Use one of: {valid}.",
+            )
+
+    # 10. Create TaskEvent (resume_requested — informational for sidecar)
+    max_seq_result = await session.execute(
+        select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+            TaskEvent.task_id == task.id
+        )
+    )
+    next_sequence = max_seq_result.scalar_one() + 1
+
+    event = TaskEvent(
+        task_id=task.id,
+        event_type="resume_requested",
+        data={
+            "from_status": old_status.value,
+            "to_status": "running",
+            "resumed_by": resumed_by,
+            "paused_duration_seconds": paused_duration_seconds,
+            "priority": (
+                task.priority.value
+                if isinstance(task.priority, TaskPriority)
+                else str(task.priority)
+            ),
+        },
+        sequence=next_sequence,
+    )
+    session.add(event)
+
+    # 11. Commit
+    await session.commit()
+    await session.refresh(task)
+    await session.refresh(event)
+
+    return task, event
+
+
+# ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 

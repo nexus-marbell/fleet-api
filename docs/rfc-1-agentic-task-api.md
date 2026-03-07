@@ -1273,7 +1273,7 @@ Content-Type: application/json
 }
 ```
 
-**State TTL**: The executor holds paused state for `state_ttl_seconds` (default: 3600, configurable via `FLEET_PAUSE_STATE_TTL`). If not resumed within this window, the task transitions to `cancelled` with reason `PAUSE_TIMEOUT`. The TTL and expiry timestamp are reported in the response so the principal knows the deadline. If the principal attempts to resume after TTL expiry, the response is `408 Request Timeout` with error code `PAUSE_TIMEOUT`.
+**State TTL**: The executor holds paused state for `state_ttl_seconds` (default: 3600, configurable via `FLEET_PAUSE_TTL_SECONDS`). If not resumed within this window, the task transitions to `cancelled` with reason `PAUSE_TIMEOUT`. The TTL and expiry timestamp are reported in the response so the principal knows the deadline. If the principal attempts to resume after TTL expiry, the response is `408 Request Timeout` with error code `PAUSE_TIMEOUT`.
 
 ---
 
@@ -1297,7 +1297,7 @@ Content-Type: application/json
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `priority` | string | No | Override task priority on resume (`low`, `normal`, `high`) |
+| `priority` | string | No | Override task priority on resume (`low`, `normal`, `high`, `critical`) |
 
 **Response** (`200 OK`):
 
@@ -1833,7 +1833,7 @@ traefik.http.services.fleet-api.loadbalancer.server.port: 8000
 | `FLEET_RATE_LIMIT_BURST` | No | Burst allowance (default: `20`) |
 | `FLEET_TASK_TIMEOUT_MAX` | No | Maximum allowed task timeout in seconds (default: `600`) |
 | `FLEET_SSE_HEARTBEAT_INTERVAL` | No | SSE heartbeat interval in seconds (default: `15`) |
-| `FLEET_PAUSE_STATE_TTL` | No | Max seconds executor holds paused state (default: `3600`) |
+| `FLEET_PAUSE_TTL_SECONDS` | No | Max seconds executor holds paused state (default: `3600`) |
 | `FLEET_RETASK_MAX_DEPTH` | No | Maximum retask chain depth (default: `10`) |
 | `FLEET_TASK_RETENTION_DAYS` | No | Days to retain task result payloads (default: `30`) |
 | `FLEET_DELEGATION_MAX_DEPTH` | No | Maximum delegation depth (default: `4`, per RFC 0) |
