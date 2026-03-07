@@ -114,13 +114,10 @@ class TestLocalExecutor:
         assert ev1["event_type"] == "progress"
         assert ev2["event_type"] == "completed"
 
-        import os
         os.unlink(script_path)
 
     async def test_handles_subprocess_failure(self) -> None:
         """Non-zero exit code produces a 'failed' event."""
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(
                 "import sys\n"
@@ -143,13 +140,10 @@ class TestLocalExecutor:
         _, stderr = await process.communicate(b'{"task_id":"t","workflow_id":"w","input":{}}')
         assert process.returncode == 1
 
-        import os
         os.unlink(script_path)
 
     async def test_handles_timeout(self) -> None:
         """Subprocess killed when timeout exceeded, EXECUTION_TIMEOUT event yielded."""
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(
                 "import sys, time\n"
@@ -181,13 +175,10 @@ class TestLocalExecutor:
 
         assert process.returncode is not None  # Process was killed.
 
-        import os
         os.unlink(script_path)
 
     async def test_captures_stderr(self) -> None:
         """Stderr from the handler is captured."""
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(
                 "import sys\n"
@@ -205,7 +196,6 @@ class TestLocalExecutor:
         _, stderr = await process.communicate(b'{"task_id":"t","workflow_id":"w","input":{}}')
         assert b"handler warning" in stderr
 
-        import os
         os.unlink(script_path)
 
     async def test_handler_not_found_yields_failed_event(self) -> None:
