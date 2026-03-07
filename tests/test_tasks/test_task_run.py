@@ -224,9 +224,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -254,9 +253,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -285,9 +283,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task(input_data={"rule": 42, "steps": 100})
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(
                 input_data={"rule": 42, "steps": 100}
@@ -316,9 +313,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task(task_id="task-f7e8d9c0")
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(task_id="task-f7e8d9c0")
         )
@@ -343,9 +339,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -392,9 +387,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task(priority=TaskPriority.HIGH)
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(priority="high")
         )
@@ -424,9 +418,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task(executor="custom-executor-agent")
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(
                 executor="custom-executor-agent"
@@ -462,9 +455,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -496,9 +488,8 @@ class TestTaskRunSuccess:
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -520,13 +511,12 @@ class TestTaskRunSuccess:
     async def test_optional_fields_default_to_none(
         self, app: Any, mock_service: MagicMock
     ) -> None:
-        """Optional fields (executor, timeout, metadata) default to None."""
+        """Optional fields (executor, timeout, metadata, callback_url) default to None."""
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -732,9 +722,8 @@ class TestTaskRunIdempotency:
         )
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, True)
+            return_value=(mock_task, mock_wf, True)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(
                 idempotency={
@@ -806,9 +795,8 @@ class TestTaskRunIdempotency:
         mock_task = _make_task(idempotency_key="brand-new-key")
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(
                 idempotency={
@@ -843,9 +831,8 @@ class TestTaskRunIdempotency:
         mock_task = _make_task()
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response()
         )
@@ -871,9 +858,8 @@ class TestTaskRunIdempotency:
         mock_task = _make_task(idempotency_key="body-key")
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(
                 idempotency={
@@ -908,9 +894,8 @@ class TestTaskRunIdempotency:
         mock_task = _make_task(idempotency_key="header-key")
         mock_wf = _make_workflow()
         mock_service.create_task = AsyncMock(
-            return_value=(mock_task, False)
+            return_value=(mock_task, mock_wf, False)
         )
-        mock_service.get_workflow_or_404 = AsyncMock(return_value=mock_wf)
         mock_service.build_task_response = MagicMock(
             return_value=_standard_response(
                 idempotency={

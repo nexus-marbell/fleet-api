@@ -42,6 +42,10 @@ class TaskRunRequest(BaseModel):
         None, description="Idempotency key (also accepted as header)"
     )
     metadata: dict[str, Any] | None = Field(None, description="Arbitrary metadata")
+    callback_url: str | None = Field(
+        None,
+        description="Webhook URL for result delivery — delivery in Phase 2",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +86,7 @@ async def run_task(
     # Header takes precedence over body for idempotency key
     effective_idempotency_key = idempotency_key or body.idempotency_key
 
-    task, is_replay = await service.create_task(
+    task, workflow, is_replay = await service.create_task(
         workflow_id=workflow_id,
         caller_agent_id=agent.agent_id,
         input_data=body.input,
@@ -92,9 +96,6 @@ async def run_task(
         idempotency_key=effective_idempotency_key,
         metadata=body.metadata,
     )
-
-    # For replay, we still need the workflow for estimated_duration
-    workflow = await service.get_workflow_or_404(workflow_id)
 
     response_data = service.build_task_response(
         task=task,

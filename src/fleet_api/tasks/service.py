@@ -98,12 +98,12 @@ class TaskService:
             ) from exc
 
     async def _check_agent_not_suspended(self, agent_id: str) -> None:
-        """Check that the workflow owner agent is not suspended."""
+        """Check that the effective executor agent is not suspended."""
         agent = await self.session.get(Agent, agent_id)
         if agent is not None and agent.status == AgentStatus.SUSPENDED:
             raise InfrastructureError(
                 code=ErrorCode.AGENT_SUSPENDED,
-                message=f"Workflow owner agent '{agent_id}' is suspended.",
+                message=f"Executor agent '{agent_id}' is suspended.",
                 suggestion="The executor agent is currently unavailable. Try again later.",
             )
 
@@ -157,22 +157,37 @@ class TaskService:
         timeout_seconds: int | None = None,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> tuple[Task, bool]:
+    ) -> tuple[Task, Workflow, bool]:
         """Create a task for a workflow.
 
-        Returns (task, is_replay). is_replay is True if an existing task
-        was returned via idempotency replay.
+        Returns (task, workflow, is_replay). is_replay is True if an existing
+        task was returned via idempotency replay.  The workflow is always
+        returned so the caller never needs a second DB fetch.
         """
-        # 1. Look up workflow
+        # 1. Idempotency check — BEFORE any other work.  On replay, workflow
+        #    fetch, suspension check, and input validation are wasted.  A replay
+        #    should return the original response regardless of current state.
+        if idempotency_key is not None:
+            existing = await self._check_idempotency(idempotency_key, input_data)
+            if existing is not None:
+                workflow = await self.get_workflow_or_404(workflow_id)
+                return existing, workflow, True
+
+        # 2. Look up workflow
         workflow = await self.get_workflow_or_404(workflow_id)
 
-        # 2. Check workflow owner is not suspended
-        await self._check_agent_not_suspended(workflow.owner_agent_id)
+        # 3. Resolve effective executor: explicit parameter > workflow owner.
+        #    Must be resolved BEFORE suspension check so the check targets the
+        #    agent that will actually execute the task.
+        effective_executor = executor_agent_id or workflow.owner_agent_id
 
-        # 3. Validate input against workflow's input_schema
+        # 4. Check effective executor is not suspended
+        await self._check_agent_not_suspended(effective_executor)
+
+        # 5. Validate input against workflow's input_schema
         self.validate_input(input_data, workflow.input_schema)
 
-        # 4. Validate priority
+        # 6. Validate priority
         try:
             priority_enum = TaskPriority(priority)
         except ValueError:
@@ -182,15 +197,6 @@ class TaskService:
                 message=f"Invalid priority '{priority}'. Must be one of: {valid}.",
                 suggestion=f"Use one of: {valid}.",
             )
-
-        # 5. Idempotency check
-        if idempotency_key is not None:
-            existing = await self._check_idempotency(idempotency_key, input_data)
-            if existing is not None:
-                return existing, True
-
-        # 6. Resolve executor: explicit parameter > workflow owner
-        effective_executor = executor_agent_id or workflow.owner_agent_id
 
         # 7. Create the task
         task_id = f"task-{uuid.uuid4().hex[:8]}"
@@ -224,7 +230,7 @@ class TaskService:
 
         await self.session.commit()
         await self.session.refresh(task)
-        return task, False
+        return task, workflow, False
 
     def build_task_response(
         self,

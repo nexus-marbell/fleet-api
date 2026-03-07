@@ -19,12 +19,16 @@ from fleet_api.tasks.state_machine import (
 
 
 class TaskPriority(enum.Enum):
-    """Task priority levels."""
+    """Task priority levels.
+
+    RFC section 3.4 defines low, normal, high.  ``CRITICAL`` is an extension
+    beyond the RFC spec, added for fleet-internal escalation semantics.
+    """
 
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"
-    CRITICAL = "critical"
+    CRITICAL = "critical"  # Extension: not in RFC §3.4 (defines low/normal/high)
 
 
 class Task(Base):
