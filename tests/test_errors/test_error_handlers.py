@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from fleet_api.app import create_app
 from fleet_api.errors import ErrorCode, FleetAPIError
@@ -31,6 +32,10 @@ def app_with_error_routes() -> FastAPI:
     @app.post("/test/validate")
     async def validate_input(name: int) -> dict[str, int]:
         return {"name": name}
+
+    @app.get("/test/http-503")
+    async def raise_http_503() -> None:
+        raise StarletteHTTPException(status_code=503, detail="Service Unavailable")
 
     return app
 
@@ -60,8 +65,9 @@ async def test_unknown_route_returns_endpoint_not_found(
     response = await error_client.get("/nonexistent")
     assert response.status_code == 404
     body = response.json()
-    assert body["error"]["code"] == "ENDPOINT_NOT_FOUND"
-    assert "No endpoint found at GET /nonexistent" in body["error"]["message"]
+    assert body["error"] is True
+    assert body["code"] == "ENDPOINT_NOT_FOUND"
+    assert "No endpoint found at GET /nonexistent" in body["message"]
 
 
 @pytest.mark.asyncio
@@ -71,8 +77,8 @@ async def test_unknown_route_has_manifest_link(
     """404 response includes _links.manifest for discoverability."""
     response = await error_client.get("/nonexistent")
     body = response.json()
-    assert "_links" in body["error"]
-    assert body["error"]["_links"]["manifest"]["href"] == "/manifest"
+    assert "_links" in body
+    assert body["_links"]["manifest"]["href"] == "/manifest"
 
 
 @pytest.mark.asyncio
@@ -83,10 +89,11 @@ async def test_fleet_api_error_returns_json(
     response = await error_client.get("/test/fleet-error")
     assert response.status_code == 404
     body = response.json()
-    assert body["error"]["code"] == "WORKFLOW_NOT_FOUND"
-    assert body["error"]["message"] == "Workflow 'wf-test' does not exist."
-    assert body["error"]["suggestion"] == "Check the workflow ID."
-    assert body["error"]["_links"]["workflows"]["href"] == "/workflows"
+    assert body["error"] is True
+    assert body["code"] == "WORKFLOW_NOT_FOUND"
+    assert body["message"] == "Workflow 'wf-test' does not exist."
+    assert body["suggestion"] == "Check the workflow ID."
+    assert body["_links"]["workflows"]["href"] == "/workflows"
 
 
 @pytest.mark.asyncio
@@ -97,8 +104,9 @@ async def test_unhandled_exception_returns_500(
     response = await error_client.get("/test/unhandled")
     assert response.status_code == 500
     body = response.json()
-    assert body["error"]["code"] == "EXECUTION_FAILED"
-    assert body["error"]["message"] == "An internal error occurred."
+    assert body["error"] is True
+    assert body["code"] == "EXECUTION_FAILED"
+    assert body["message"] == "An internal error occurred."
     # No stack trace in response
     response_text = response.text
     assert "Traceback" not in response_text
@@ -112,15 +120,15 @@ async def test_all_error_responses_are_json(
     """All error responses have Content-Type: application/json."""
     # 404
     r404 = await error_client.get("/nonexistent")
-    assert r404.headers["content-type"] == "application/json"
+    assert "application/json" in r404.headers["content-type"]
 
     # FleetAPIError
     r_fleet = await error_client.get("/test/fleet-error")
-    assert r_fleet.headers["content-type"] == "application/json"
+    assert "application/json" in r_fleet.headers["content-type"]
 
     # 500
     r500 = await error_client.get("/test/unhandled")
-    assert r500.headers["content-type"] == "application/json"
+    assert "application/json" in r500.headers["content-type"]
 
 
 @pytest.mark.asyncio
@@ -134,10 +142,11 @@ async def test_validation_error_returns_422(
     )
     assert response.status_code == 422
     body = response.json()
-    assert body["error"]["code"] == "INVALID_INPUT"
-    assert body["error"]["message"] == "Request validation failed."
-    assert "validation_errors" in body["error"]
-    assert len(body["error"]["validation_errors"]) > 0
+    assert body["error"] is True
+    assert body["code"] == "INVALID_INPUT"
+    assert body["message"] == "Request validation failed."
+    assert "validation_errors" in body
+    assert len(body["validation_errors"]) > 0
 
 
 @pytest.mark.asyncio
@@ -148,10 +157,24 @@ async def test_suggestion_present_in_error_responses(
     # 404 unknown route
     r404 = await error_client.get("/nonexistent")
     body = r404.json()
-    assert "suggestion" in body["error"]
-    assert "manifest" in body["error"]["suggestion"].lower()
+    assert "suggestion" in body
+    assert "manifest" in body["suggestion"].lower()
 
     # 500 unhandled
     r500 = await error_client.get("/test/unhandled")
     body = r500.json()
-    assert "suggestion" in body["error"]
+    assert "suggestion" in body
+
+
+@pytest.mark.asyncio
+async def test_non_404_http_exception_returns_flat_error(
+    error_client: AsyncClient,
+) -> None:
+    """Non-404 HTTPException (e.g. 503) returns flat error format."""
+    response = await error_client.get("/test/http-503")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"] is True
+    assert body["code"] == "HTTP_503"
+    assert body["message"] == "Service Unavailable"
+    assert "application/json" in response.headers["content-type"]

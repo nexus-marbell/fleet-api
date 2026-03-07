@@ -7,9 +7,9 @@ from fleet_api.errors import (
     ErrorCode,
     FleetAPIError,
     InfrastructureError,
+    InputValidationError,
     NotFoundError,
     StateError,
-    ValidationError,
 )
 
 
@@ -27,12 +27,11 @@ class TestFleetAPIErrorToDict:
         result = error.to_dict()
 
         assert result == {
-            "error": {
-                "code": "WORKFLOW_NOT_FOUND",
-                "message": "Workflow 'wf-test' does not exist.",
-                "suggestion": "Check the workflow ID.",
-                "_links": {"workflows": {"href": "/workflows"}},
-            }
+            "error": True,
+            "code": "WORKFLOW_NOT_FOUND",
+            "message": "Workflow 'wf-test' does not exist.",
+            "suggestion": "Check the workflow ID.",
+            "_links": {"workflows": {"href": "/workflows"}},
         }
 
     def test_fleet_api_error_to_dict_minimal(self) -> None:
@@ -44,13 +43,12 @@ class TestFleetAPIErrorToDict:
         result = error.to_dict()
 
         assert result == {
-            "error": {
-                "code": "EXECUTION_FAILED",
-                "message": "An internal error occurred.",
-            }
+            "error": True,
+            "code": "EXECUTION_FAILED",
+            "message": "An internal error occurred.",
         }
-        assert "suggestion" not in result["error"]
-        assert "_links" not in result["error"]
+        assert "suggestion" not in result
+        assert "_links" not in result
 
 
 class TestErrorCodeStatusMapping:
@@ -150,8 +148,8 @@ class TestConvenienceSubclasses:
         assert isinstance(error, FleetAPIError)
         assert error.http_status == 409
 
-    def test_validation_error_is_fleet_api_error(self) -> None:
-        error = ValidationError(
+    def test_input_validation_error_is_fleet_api_error(self) -> None:
+        error = InputValidationError(
             code=ErrorCode.INVALID_INPUT, message="Invalid"
         )
         assert isinstance(error, FleetAPIError)
@@ -179,5 +177,6 @@ class TestConvenienceSubclasses:
             suggestion="Verify the task ID.",
         )
         result = error.to_dict()
-        assert result["error"]["code"] == "TASK_NOT_FOUND"
-        assert result["error"]["suggestion"] == "Verify the task ID."
+        assert result["error"] is True
+        assert result["code"] == "TASK_NOT_FOUND"
+        assert result["suggestion"] == "Verify the task ID."

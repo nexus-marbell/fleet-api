@@ -45,13 +45,12 @@ def register_error_handlers(app: FastAPI) -> None:
             )
             return JSONResponse(status_code=404, content=error.to_dict())
 
-        # For other HTTP exceptions, wrap in standard format
+        # For other HTTP exceptions, wrap in flat error format
         detail = str(exc.detail) if exc.detail else f"HTTP {exc.status_code}"
         content: dict[str, Any] = {
-            "error": {
-                "code": f"HTTP_{exc.status_code}",
-                "message": detail,
-            }
+            "error": True,
+            "code": f"HTTP_{exc.status_code}",
+            "message": detail,
         }
         return JSONResponse(
             status_code=exc.status_code,
@@ -69,7 +68,7 @@ def register_error_handlers(app: FastAPI) -> None:
             suggestion="Check the request body against the expected schema.",
         )
         response = error.to_dict()
-        response["error"]["validation_errors"] = exc.errors()
+        response["validation_errors"] = exc.errors()
         return JSONResponse(status_code=422, content=response)
 
     @app.exception_handler(Exception)

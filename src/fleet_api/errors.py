@@ -102,16 +102,17 @@ class FleetAPIError(Exception):
         super().__init__(message)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to the standard error response format."""
-        error: dict[str, Any] = {
+        """Convert to the flat error response format (RFC 1 S3.3/S3.4/S8)."""
+        result: dict[str, Any] = {
+            "error": True,
             "code": self.code.value,
             "message": self.message,
         }
         if self.suggestion:
-            error["suggestion"] = self.suggestion
+            result["suggestion"] = self.suggestion
         if self.links:
-            error["_links"] = self.links
-        return {"error": error}
+            result["_links"] = self.links
+        return result
 
 
 # Convenience subclasses
@@ -127,7 +128,7 @@ class ConflictError(FleetAPIError):
     """409 errors."""
 
 
-class ValidationError(FleetAPIError):
+class InputValidationError(FleetAPIError):
     """422 errors."""
 
 
