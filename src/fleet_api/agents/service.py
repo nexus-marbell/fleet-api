@@ -74,8 +74,9 @@ class AgentService:
         now = datetime.now(UTC)
         agent.last_heartbeat = now
 
-        # First heartbeat transitions registered -> active
-        if agent.status == AgentStatus.REGISTERED:
+        # First heartbeat transitions registered -> active;
+        # subsequent heartbeat re-activates unreachable agents.
+        if agent.status in (AgentStatus.REGISTERED, AgentStatus.UNREACHABLE):
             agent.status = AgentStatus.ACTIVE
 
         await self._session.commit()
