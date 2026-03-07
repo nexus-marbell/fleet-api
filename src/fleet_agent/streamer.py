@@ -26,6 +26,30 @@ class EventStreamer:
     Each event is POSTed to ``/tasks/{task_id}/events`` with Ed25519 signed
     headers.  Transient failures (connection errors, 5xx responses) are retried
     with exponential backoff.
+
+    Failure Mode — Retry Exhaustion
+    --------------------------------
+    When all retry attempts are exhausted for a given event (default: 4 retries
+    with exponential backoff up to 16 s), the event is **dropped**.  The
+    streamer logs an ``ERROR``-level message containing the event sequence
+    number, task ID, total attempts, and the last error, then continues to the
+    next event.
+
+    **What operators should monitor:**
+
+    * Log messages at ``ERROR`` level matching
+      ``"Failed to POST event seq=..."`` — each occurrence means one event was
+      permanently lost.
+    * Sustained occurrences indicate fleet-api is down or the network path is
+      broken.
+
+    **Recovery:**
+
+    In Phase 1 there is **no recovery mechanism** for dropped events.  Once
+    retries are exhausted the event is gone.  The subprocess stdout that
+    produced the event is already consumed and not buffered.  This is a known
+    limitation — Phase 2 may introduce a persistent outbox (write-ahead log)
+    to allow replay of failed events.
     """
 
     def __init__(

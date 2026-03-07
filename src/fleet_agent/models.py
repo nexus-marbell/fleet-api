@@ -27,10 +27,11 @@ class TaskEvent(BaseModel):
 class HealthStatus(BaseModel):
     """Health status returned by the sidecar's ``/fleet/health`` endpoint."""
 
-    status: str  # healthy, unhealthy
+    status: str  # healthy, degraded, unhealthy
     agent_id: str
     fleet_api_url: str
     fleet_api_reachable: bool
     poller_running: bool
     active_tasks: int
     uptime_seconds: int
+    fleet_api_latency_ms: int | None = None

@@ -31,7 +31,12 @@ def sign_request(
     method:
         HTTP method (``GET``, ``POST``, etc.).
     path:
-        Request path including query string (e.g. ``/agents/a1/tasks/pending``).
+        Request path **without** a query string.  The signing string is
+        constructed as ``METHOD\\nPATH\\nTIMESTAMP\\nSHA256(BODY)`` and the
+        fleet-api verifier expects the raw path component only.  Callers
+        **must** strip query parameters (everything from ``?`` onward) before
+        passing *path* to this function — otherwise the signature will not
+        match the server-side verification.
     body:
         Raw request body (``b""`` for GET requests).
     private_key:
@@ -43,6 +48,15 @@ def sign_request(
     -------
     dict[str, str]
         Headers dict with ``Authorization`` and ``X-Fleet-Timestamp``.
+
+    Notes
+    -----
+    Query string handling is the **caller's responsibility**.  This function
+    signs whatever *path* string it receives verbatim.  If a query string is
+    included, the resulting signature will cover that query string — but
+    fleet-api's verifier strips query parameters before verifying, causing a
+    mismatch.  Always pass the bare path (e.g. ``/agents/a1/tasks/pending``,
+    not ``/agents/a1/tasks/pending?limit=10``).
     """
     timestamp = datetime.now(UTC).isoformat()
     body_hash = hashlib.sha256(body).hexdigest()

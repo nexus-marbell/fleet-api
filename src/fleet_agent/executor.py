@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from fleet_agent.models import PendingTask, TaskEvent
 
@@ -30,7 +30,7 @@ class LocalExecutor:
     def __init__(self, handler_command: str = "fleet-handler") -> None:
         self._handler_command = handler_command
 
-    async def execute(self, task: PendingTask) -> AsyncIterator[TaskEvent]:
+    async def execute(self, task: PendingTask) -> AsyncGenerator[TaskEvent, None]:
         """Execute *task* and yield events as they occur.
 
         The handler subprocess receives the full task input as JSON on stdin.
@@ -123,7 +123,7 @@ class LocalExecutor:
         process: asyncio.subprocess.Process,
         start_sequence: int,
         timeout: int,
-    ) -> AsyncIterator[TaskEvent]:
+    ) -> AsyncGenerator[TaskEvent, None]:
         """Read newline-delimited JSON events from the subprocess stdout."""
         sequence = start_sequence
         if process.stdout is None:
