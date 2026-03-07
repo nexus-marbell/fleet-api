@@ -50,7 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(manifest_router)
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
     app.include_router(workflows_router, prefix="/workflows", tags=["workflows"])
-    app.include_router(tasks_router, prefix="/tasks", tags=["tasks"])
+    app.include_router(tasks_router)
 
     @app.get("/")
     async def root() -> dict[str, str]:
