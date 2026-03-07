@@ -37,7 +37,7 @@ class TestManifestResponse:
             "base_url",
             "auth",
             "capabilities",
-            "rate_limit",
+            "rate_limits",
             "parameter_conventions",
             "schema_changelog",
             "_links",
@@ -73,17 +73,23 @@ class TestManifestAuth:
         assert data["auth"]["type"] == "ed25519-signature"
 
     @pytest.mark.asyncio
-    async def test_auth_header_format(self, client):
-        """Auth header format describes the Signature scheme."""
+    async def test_auth_header(self, client):
+        """Auth header is Authorization."""
         data = (await client.get("/manifest")).json()
-        assert "Signature" in data["auth"]["header_format"]
-        assert "{agent_id}" in data["auth"]["header_format"]
+        assert data["auth"]["header"] == "Authorization"
 
     @pytest.mark.asyncio
-    async def test_auth_key_registration_path(self, client):
+    async def test_auth_format(self, client):
+        """Auth format describes the Signature scheme."""
+        data = (await client.get("/manifest")).json()
+        assert "Signature" in data["auth"]["format"]
+        assert "<agent_id>" in data["auth"]["format"]
+
+    @pytest.mark.asyncio
+    async def test_auth_key_registration(self, client):
         """Key registration path points to /agents/register."""
         data = (await client.get("/manifest")).json()
-        assert data["auth"]["key_registration_path"] == "/agents/register"
+        assert data["auth"]["key_registration"] == "/agents/register"
 
     @pytest.mark.asyncio
     async def test_server_public_key_null_when_no_private_key(self, client):
@@ -92,16 +98,11 @@ class TestManifestAuth:
         assert data["auth"]["server_public_key"] is None
 
     @pytest.mark.asyncio
-    async def test_replay_window_seconds(self, client):
-        """Replay window is documented in seconds."""
+    async def test_auth_fields_match_rfc(self, client):
+        """Auth section contains exactly the RFC-specified fields."""
         data = (await client.get("/manifest")).json()
-        assert data["auth"]["replay_window_seconds"] == 300
-
-    @pytest.mark.asyncio
-    async def test_timestamp_header(self, client):
-        """Timestamp header name is documented."""
-        data = (await client.get("/manifest")).json()
-        assert data["auth"]["timestamp_header"] == "X-Fleet-Timestamp"
+        expected_keys = {"type", "header", "format", "key_registration", "server_public_key"}
+        assert set(data["auth"].keys()) == expected_keys
 
 
 class TestManifestCapabilities:
@@ -133,22 +134,22 @@ class TestManifestCapabilities:
         )
 
 
-class TestManifestRateLimit:
-    """Verify rate limit configuration in manifest."""
+class TestManifestRateLimits:
+    """Verify rate limits configuration in manifest."""
 
     @pytest.mark.asyncio
-    async def test_rate_limit_structure(self, client):
-        """Rate limit has requests_per_minute and burst."""
+    async def test_rate_limits_structure(self, client):
+        """Rate limits has requests_per_minute and burst."""
         data = (await client.get("/manifest")).json()
-        rl = data["rate_limit"]
+        rl = data["rate_limits"]
         assert "requests_per_minute" in rl
         assert "burst" in rl
 
     @pytest.mark.asyncio
-    async def test_rate_limit_values_are_integers(self, client):
+    async def test_rate_limits_values_are_integers(self, client):
         """Rate limit values are positive integers."""
         data = (await client.get("/manifest")).json()
-        rl = data["rate_limit"]
+        rl = data["rate_limits"]
         assert isinstance(rl["requests_per_minute"], int)
         assert isinstance(rl["burst"], int)
         assert rl["requests_per_minute"] > 0
@@ -156,25 +157,54 @@ class TestManifestRateLimit:
 
 
 class TestManifestParameterConventions:
-    """Verify parameter naming conventions and rejected aliases."""
+    """Verify parameter conventions match RFC section 3.1."""
 
     @pytest.mark.asyncio
-    async def test_naming_convention(self, client):
-        """Naming convention is snake_case."""
+    async def test_canonical_parameters_present(self, client):
+        """Canonical parameters limit, cursor, status are defined."""
         data = (await client.get("/manifest")).json()
-        assert data["parameter_conventions"]["naming"] == "snake_case"
+        pc = data["parameter_conventions"]
+        assert "limit" in pc
+        assert "cursor" in pc
+        assert "status" in pc
 
     @pytest.mark.asyncio
-    async def test_rejected_aliases_present(self, client):
-        """Rejected aliases map camelCase to snake_case equivalents."""
+    async def test_limit_convention_shape(self, client):
+        """limit convention has description, type, default, max, not."""
         data = (await client.get("/manifest")).json()
-        aliases = data["parameter_conventions"]["rejected_aliases"]
-        assert isinstance(aliases, dict)
-        assert len(aliases) > 0
-        # Every key should be camelCase, every value snake_case
-        for key, value in aliases.items():
-            assert "_" not in key, f"Key '{key}' should be camelCase"
-            assert "_" in value, f"Value '{value}' should be snake_case"
+        limit = data["parameter_conventions"]["limit"]
+        assert limit["description"] == "Maximum number of results to return"
+        assert limit["type"] == "integer"
+        assert limit["default"] == 20
+        assert limit["max"] == 100
+        assert isinstance(limit["not"], list)
+        assert "count" in limit["not"]
+
+    @pytest.mark.asyncio
+    async def test_cursor_convention_shape(self, client):
+        """cursor convention has description, type, not."""
+        data = (await client.get("/manifest")).json()
+        cursor = data["parameter_conventions"]["cursor"]
+        assert cursor["type"] == "string"
+        assert "page" in cursor["not"]
+
+    @pytest.mark.asyncio
+    async def test_status_convention_shape(self, client):
+        """status convention has description, type, not."""
+        data = (await client.get("/manifest")).json()
+        status = data["parameter_conventions"]["status"]
+        assert status["type"] == "string"
+        assert "state" in status["not"]
+
+    @pytest.mark.asyncio
+    async def test_not_lists_are_rejected_aliases(self, client):
+        """Each convention's 'not' list contains rejected alias names."""
+        data = (await client.get("/manifest")).json()
+        pc = data["parameter_conventions"]
+        for name, conv in pc.items():
+            assert "not" in conv, f"Convention '{name}' missing 'not' list"
+            assert isinstance(conv["not"], list)
+            assert len(conv["not"]) > 0, f"Convention '{name}' has empty 'not' list"
 
 
 class TestManifestSchemaChangelog:
@@ -189,13 +219,22 @@ class TestManifestSchemaChangelog:
 
     @pytest.mark.asyncio
     async def test_changelog_entry_structure(self, client):
-        """Each changelog entry has version, date, changes."""
+        """Each changelog entry has version, date, changes, breaking."""
         data = (await client.get("/manifest")).json()
         entry = data["schema_changelog"][0]
         assert "version" in entry
         assert "date" in entry
         assert "changes" in entry
         assert isinstance(entry["changes"], list)
+        assert "breaking" in entry
+        assert isinstance(entry["breaking"], bool)
+
+    @pytest.mark.asyncio
+    async def test_initial_release_not_breaking(self, client):
+        """Initial release changelog entry is not breaking."""
+        data = (await client.get("/manifest")).json()
+        entry = data["schema_changelog"][0]
+        assert entry["breaking"] is False
 
 
 class TestManifestLinks:
@@ -216,10 +255,10 @@ class TestManifestLinks:
 
     @pytest.mark.asyncio
     async def test_required_links(self, client):
-        """All top-level endpoint links are present."""
+        """All top-level endpoint links are present per RFC section 3.1."""
         data = (await client.get("/manifest")).json()
         links = data["_links"]
-        required = {"self", "agents", "workflows", "tasks", "health", "openapi"}
+        required = {"self", "workflows", "health", "tools", "openapi", "errors"}
         assert required.issubset(links.keys()), f"Missing links: {required - links.keys()}"
 
     @pytest.mark.asyncio
@@ -257,11 +296,10 @@ class TestManifestHeaders:
         assert int(response.headers["x-ratelimit-limit"]) > 0
 
     @pytest.mark.asyncio
-    async def test_rate_limit_remaining_header(self, client):
-        """X-RateLimit-Remaining header is present."""
+    async def test_rate_limit_remaining_header_absent(self, client):
+        """X-RateLimit-Remaining is NOT sent (real tracking is Phase 3)."""
         response = await client.get("/manifest")
-        assert "x-ratelimit-remaining" in response.headers
-        assert int(response.headers["x-ratelimit-remaining"]) > 0
+        assert "x-ratelimit-remaining" not in response.headers
 
     @pytest.mark.asyncio
     async def test_rate_limit_reset_header(self, client):

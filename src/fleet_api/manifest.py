@@ -31,27 +31,36 @@ def _build_manifest() -> dict[str, Any]:
         "base_url": base,
         "auth": {
             "type": "ed25519-signature",
-            "header_format": "Signature {agent_id}:{base64_signature}",
-            "timestamp_header": "X-Fleet-Timestamp",
-            "replay_window_seconds": 300,
-            "key_registration_path": "/agents/register",
+            "header": "Authorization",
+            "format": "Signature <agent_id>:<base64_signature>",
+            "key_registration": "/agents/register",
             "server_public_key": None,
         },
         "capabilities": [
             "workflow_registry",
             "task_dispatch",
         ],
-        "rate_limit": {
+        "rate_limits": {
             "requests_per_minute": settings.rate_limit_rpm,
             "burst": settings.rate_limit_burst,
         },
         "parameter_conventions": {
-            "naming": "snake_case",
-            "rejected_aliases": {
-                "workflowId": "workflow_id",
-                "agentId": "agent_id",
-                "taskId": "task_id",
-                "idempotencyKey": "idempotency_key",
+            "limit": {
+                "description": "Maximum number of results to return",
+                "type": "integer",
+                "default": 20,
+                "max": 100,
+                "not": ["count", "max", "n", "page_size", "per_page"],
+            },
+            "cursor": {
+                "description": "Opaque pagination cursor from a previous response",
+                "type": "string",
+                "not": ["page", "offset", "skip", "page_token"],
+            },
+            "status": {
+                "description": "Filter by lifecycle status",
+                "type": "string",
+                "not": ["state", "phase", "stage"],
             },
         },
         "schema_changelog": [
@@ -59,6 +68,7 @@ def _build_manifest() -> dict[str, Any]:
                 "version": "1.0.0",
                 "date": "2026-03-07",
                 "changes": ["Initial release -- manifest, agents, workflows, tasks"],
+                "breaking": False,
             },
         ],
         "_links": {
@@ -68,8 +78,9 @@ def _build_manifest() -> dict[str, Any]:
             "workflows": {"href": f"{base}/workflows"},
             "tasks": {"href": f"{base}/tasks"},
             "health": {"href": f"{base}/health"},
-            "errors": {"href": f"{base}/errors"},
+            "tools": {"href": f"{base}/tools"},
             "openapi": {"href": f"{base}/openapi.json"},
+            "errors": {"href": f"{base}/errors"},
         },
     }
 
@@ -83,7 +94,6 @@ async def get_manifest() -> JSONResponse:
     headers = {
         "X-Schema-Version": settings.api_version,
         "X-RateLimit-Limit": str(settings.rate_limit_rpm),
-        "X-RateLimit-Remaining": str(settings.rate_limit_rpm),
         "X-RateLimit-Reset": str(now + 60),
         "Cache-Control": "public, max-age=60",
     }
