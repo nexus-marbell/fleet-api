@@ -1,4 +1,4 @@
-"""Task API routes — dispatch, read, and list endpoints.
+"""Task API routes — dispatch, read, list, and cancel endpoints.
 
 Routes use full paths (e.g. /workflows/{workflow_id}/run) because task
 endpoints nest under /workflows/{id}/ per the RFC.
@@ -16,8 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
+from fleet_api.tasks.models import Task
 from fleet_api.tasks.service import (
     TaskService,
+    cancel_task,
     task_to_detail_response,
     task_to_summary_response,
 )
@@ -26,7 +28,7 @@ router = APIRouter(tags=["tasks"])
 
 
 # ---------------------------------------------------------------------------
-# Pydantic request schema
+# Pydantic request schemas
 # ---------------------------------------------------------------------------
 
 
@@ -52,6 +54,12 @@ class TaskRunRequest(BaseModel):
     )
 
 
+class TaskCancelRequest(BaseModel):
+    """Request body for POST /workflows/{workflow_id}/tasks/{task_id}/cancel."""
+
+    reason: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
@@ -62,6 +70,60 @@ def get_task_service(
 ) -> TaskService:
     """FastAPI dependency: instantiate TaskService with a database session."""
     return TaskService(session)
+
+
+# ---------------------------------------------------------------------------
+# HATEOAS link builders
+# ---------------------------------------------------------------------------
+
+
+def build_cancel_links(task_id: str, workflow_id: str) -> dict[str, Any]:
+    """Build HATEOAS _links for a cancelled task response.
+
+    Cancelled is a terminal state — self, workflow, and rerun.
+    Action links include ``"method": "POST"`` per RFC section 3.6.
+    """
+    return {
+        "self": {"href": f"/workflows/{workflow_id}/tasks/{task_id}"},
+        "workflow": {"href": f"/workflows/{workflow_id}"},
+        "rerun": {"method": "POST", "href": f"/workflows/{workflow_id}/run"},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Response builders
+# ---------------------------------------------------------------------------
+
+
+def _cancel_response(
+    task: Task,
+    cancelled_by: str,
+    reason: str | None,
+) -> dict[str, Any]:
+    """Build the cancel response — returns the full updated task per RFC.
+
+    Uses RFC field names: ``caller`` (not principal_agent_id),
+    ``executor`` (not executor_agent_id).
+
+    Includes ``cancelled_at``, ``cancelled_by``, and ``reason`` at top level
+    per Issue #16 spec.
+    """
+    return {
+        "task_id": task.id,
+        "workflow_id": task.workflow_id,
+        "caller": task.principal_agent_id,
+        "executor": task.executor_agent_id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "input": task.input,
+        "result": task.result,
+        "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "cancelled_at": task.completed_at.isoformat() if task.completed_at else None,
+        "cancelled_by": cancelled_by,
+        "reason": reason,
+        "_links": build_cancel_links(task.id, task.workflow_id),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +255,28 @@ async def list_tasks(
         "_links": response_links,
     }
     return response
+
+
+@router.post("/workflows/{workflow_id}/tasks/{task_id}/cancel")
+async def cancel_task_endpoint(
+    workflow_id: str,
+    task_id: str,
+    body: TaskCancelRequest | None = None,
+    agent: AuthenticatedAgent | None = Depends(require_auth),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Cancel a task. Caller must be the task principal or workflow owner."""
+    if agent is None:
+        raise RuntimeError("require_auth dependency returned None on a protected route")
+
+    reason = body.reason if body is not None else None
+
+    task = await cancel_task(
+        session=session,
+        workflow_id=workflow_id,
+        task_id=task_id,
+        cancelled_by=agent.agent_id,
+        reason=reason,
+    )
+
+    return _cancel_response(task, cancelled_by=agent.agent_id, reason=reason)
