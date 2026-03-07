@@ -276,7 +276,7 @@ class TestListWorkflows:
         wf1 = _make_workflow(workflow_id="wf-alpha", name="Alpha")
         wf2 = _make_workflow(workflow_id="wf-beta", name="Beta")
         mock_service.list_workflows = AsyncMock(
-            return_value=([wf1, wf2], None, False, 2)
+            return_value=([(wf1, "active"), (wf2, "active")], None, False, 2)
         )
 
         transport = ASGITransport(app=app)
@@ -296,7 +296,7 @@ class TestListWorkflows:
         """GET /workflows with has_more=True includes next cursor."""
         wf1 = _make_workflow(workflow_id="wf-alpha")
         mock_service.list_workflows = AsyncMock(
-            return_value=([wf1], "eyJpZCI6ICJ3Zi1hbHBoYSJ9", True, 5)
+            return_value=([(wf1, "active")], "eyJpZCI6ICJ3Zi1hbHBoYSJ9", True, 5)
         )
 
         transport = ASGITransport(app=app)
@@ -346,7 +346,7 @@ class TestGetWorkflow:
     ) -> None:
         """GET /workflows/{id} returns workflow details with _links."""
         mock_wf = _make_workflow()
-        mock_service.get_workflow = AsyncMock(return_value=mock_wf)
+        mock_service.get_workflow_with_executor_status = AsyncMock(return_value=(mock_wf, "active"))
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -356,6 +356,7 @@ class TestGetWorkflow:
         data = response.json()
         assert data["id"] == "wf-test"
         assert data["name"] == "Test Workflow"
+        assert data["executor_status"] == "active"
         assert data["_links"]["self"]["href"] == "/workflows/wf-test"
         assert data["_links"]["tasks"]["href"] == "/workflows/wf-test/tasks"
         assert data["_links"]["run"]["href"] == "/workflows/wf-test/run"
@@ -368,7 +369,7 @@ class TestGetWorkflow:
         """GET /workflows/{id} for nonexistent workflow returns 404."""
         from fleet_api.errors import ErrorCode, NotFoundError
 
-        mock_service.get_workflow = AsyncMock(
+        mock_service.get_workflow_with_executor_status = AsyncMock(
             side_effect=NotFoundError(
                 code=ErrorCode.WORKFLOW_NOT_FOUND,
                 message="Workflow 'wf-ghost' not found.",
@@ -382,6 +383,22 @@ class TestGetWorkflow:
         assert response.status_code == 404
         data = response.json()
         assert data["code"] == "WORKFLOW_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_includes_executor_status_null(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """GET /workflows/{id} shows executor_status=null when agent deleted."""
+        mock_wf = _make_workflow()
+        mock_service.get_workflow_with_executor_status = AsyncMock(return_value=(mock_wf, None))
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows/wf-test")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["executor_status"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -613,3 +630,251 @@ class TestResponseStructure:
         assert "_links" in data
         assert "self" in data["_links"]
         assert "register" in data["_links"]
+
+    @pytest.mark.asyncio
+    async def test_create_response_has_executor_status_null(
+        self, app: Any, mock_service: MagicMock
+    ) -> None:
+        """POST /workflows response includes executor_status (null for create)."""
+        mock_wf = _make_workflow()
+        mock_service.create_workflow = AsyncMock(return_value=mock_wf)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/workflows",
+                json={"id": "wf-test", "name": "Test Workflow", "result_retention_days": 30},
+            )
+
+        data = response.json()
+        assert "executor_status" in data
+        assert data["executor_status"] is None
+
+
+# ---------------------------------------------------------------------------
+# Executor status annotation tests (Issue #31 Gap 2)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutorStatus:
+    """Verify that executor_status is returned correctly in workflow responses.
+
+    executor_status reflects the owning agent's current status (active,
+    registered, unreachable, suspended) or null when the agent no longer
+    exists.  Workflows are NEVER filtered -- only annotated.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_workflows_executor_status_active(self) -> None:
+        """GET /workflows returns executor_status='active' for active agents."""
+        mock_svc = MagicMock()
+        wf = _make_workflow(workflow_id="wf-1")
+        mock_svc.list_workflows = AsyncMock(
+            return_value=([(wf, "active")], None, False, 1)
+        )
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["executor_status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_list_workflows_executor_status_unreachable(self) -> None:
+        """GET /workflows returns executor_status='unreachable' -- workflow NOT filtered."""
+        mock_svc = MagicMock()
+        wf = _make_workflow(workflow_id="wf-2")
+        mock_svc.list_workflows = AsyncMock(
+            return_value=([(wf, "unreachable")], None, False, 1)
+        )
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["executor_status"] == "unreachable"
+        assert data["data"][0]["id"] == "wf-2"
+
+    @pytest.mark.asyncio
+    async def test_list_workflows_executor_status_suspended(self) -> None:
+        """GET /workflows returns executor_status='suspended' -- workflow NOT filtered."""
+        mock_svc = MagicMock()
+        wf = _make_workflow(workflow_id="wf-3")
+        mock_svc.list_workflows = AsyncMock(
+            return_value=([(wf, "suspended")], None, False, 1)
+        )
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["executor_status"] == "suspended"
+
+    @pytest.mark.asyncio
+    async def test_list_workflows_executor_status_null_when_agent_deleted(self) -> None:
+        """GET /workflows returns executor_status=null when owner agent is deleted."""
+        mock_svc = MagicMock()
+        wf = _make_workflow(workflow_id="wf-orphan")
+        mock_svc.list_workflows = AsyncMock(
+            return_value=([(wf, None)], None, False, 1)
+        )
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["executor_status"] is None
+
+    @pytest.mark.asyncio
+    async def test_list_workflows_mixed_executor_statuses(self) -> None:
+        """GET /workflows can return different executor_status values per workflow."""
+        mock_svc = MagicMock()
+        wf1 = _make_workflow(workflow_id="wf-a", owner="agent-1")
+        wf2 = _make_workflow(workflow_id="wf-b", owner="agent-2")
+        wf3 = _make_workflow(workflow_id="wf-c", owner="agent-3")
+        mock_svc.list_workflows = AsyncMock(
+            return_value=(
+                [(wf1, "active"), (wf2, "unreachable"), (wf3, None)],
+                None,
+                False,
+                3,
+            )
+        )
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["data"]) == 3
+        assert data["data"][0]["executor_status"] == "active"
+        assert data["data"][1]["executor_status"] == "unreachable"
+        assert data["data"][2]["executor_status"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_executor_status_active(self) -> None:
+        """GET /workflows/{id} returns executor_status='active'."""
+        mock_svc = MagicMock()
+        wf = _make_workflow()
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "active"))
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows/wf-test")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["executor_status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_executor_status_unreachable(self) -> None:
+        """GET /workflows/{id} returns executor_status='unreachable'."""
+        mock_svc = MagicMock()
+        wf = _make_workflow()
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "unreachable"))
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows/wf-test")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["executor_status"] == "unreachable"
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_executor_status_registered(self) -> None:
+        """GET /workflows/{id} returns executor_status='registered'."""
+        mock_svc = MagicMock()
+        wf = _make_workflow()
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "registered"))
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows/wf-test")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["executor_status"] == "registered"
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_executor_status_null(self) -> None:
+        """GET /workflows/{id} returns executor_status=null when agent deleted."""
+        mock_svc = MagicMock()
+        wf = _make_workflow()
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, None))
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows/wf-test")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["executor_status"] is None
+
+    @pytest.mark.asyncio
+    async def test_unreachable_workflows_not_filtered(self) -> None:
+        """Workflows owned by unreachable agents are returned, not filtered out."""
+        mock_svc = MagicMock()
+        wf_active = _make_workflow(workflow_id="wf-healthy", owner="agent-ok")
+        wf_unreachable = _make_workflow(workflow_id="wf-stale", owner="agent-down")
+        mock_svc.list_workflows = AsyncMock(
+            return_value=(
+                [(wf_active, "active"), (wf_unreachable, "unreachable")],
+                None,
+                False,
+                2,
+            )
+        )
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows")
+
+        assert response.status_code == 200
+        data = response.json()
+        ids = [item["id"] for item in data["data"]]
+        assert "wf-healthy" in ids
+        assert "wf-stale" in ids
+        assert data["pagination"]["total_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_executor_status_positioned_after_status(self) -> None:
+        """executor_status appears in the response dict (position check)."""
+        mock_svc = MagicMock()
+        wf = _make_workflow()
+        mock_svc.get_workflow_with_executor_status = AsyncMock(return_value=(wf, "active"))
+        app = _create_test_app(mock_svc)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/workflows/wf-test")
+
+        data = response.json()
+        keys = list(data.keys())
+        assert "executor_status" in keys
+        assert "status" in keys
+        # executor_status should come after status in response
+        assert keys.index("executor_status") > keys.index("status")
