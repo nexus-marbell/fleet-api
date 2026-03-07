@@ -1,17 +1,28 @@
-"""Task poller -- polls fleet-api for pending tasks at a configurable interval."""
+"""Task poller -- polls fleet-api for pending tasks at a configurable interval.
+
+Phase 2 enhancement (Unit 8): the poller now coordinates with a
+:class:`SignalPoller` to support interruptible task execution.  When a signal
+poller is provided, each dispatched task is registered for signal monitoring,
+and the executor receives the signal poller reference so it can check for
+pause/cancel/redirect/context signals between processing steps.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from fleet_agent.executor import LocalExecutor
+from fleet_agent.executor import LocalExecutor, TaskRedirectedError
 from fleet_agent.models import PendingTask
 from fleet_agent.signing import sign_request
 from fleet_agent.streamer import EventStreamer
+
+if TYPE_CHECKING:
+    from fleet_agent.signals import SignalPoller
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +37,10 @@ class TaskPoller:
     New tasks are dispatched to a :class:`LocalExecutor` and results are
     streamed back via an :class:`EventStreamer`.  In-flight tasks are tracked
     to avoid double-dispatch, and ``FLEET_MAX_CONCURRENT_TASKS`` is respected.
+
+    Phase 2 addition: accepts an optional ``signal_poller`` to enable
+    interruptible task execution with pause/resume/cancel/redirect/context
+    injection support.
     """
 
     def __init__(
@@ -87,14 +102,23 @@ class TaskPoller:
         self._current_backoff = _BASE_BACKOFF_SECONDS
 
         data = response.json()
-        tasks_data = data if isinstance(data, list) else data.get("tasks", [])
+        tasks_data = data if isinstance(data, list) else data.get("tasks", data.get("data", []))
         return [PendingTask.model_validate(t) for t in tasks_data]
 
-    async def run(self, executor: LocalExecutor, streamer: EventStreamer) -> None:
+    async def run(
+        self,
+        executor: LocalExecutor,
+        streamer: EventStreamer,
+        signal_poller: SignalPoller | None = None,
+    ) -> None:
         """Main polling loop.
 
         Polls for pending tasks, dispatches new ones to *executor*, and
         streams results back via *streamer*.  Runs until cancelled.
+
+        If *signal_poller* is provided, each dispatched task is registered
+        for signal monitoring, and the executor receives the signal poller
+        so it can check for signals during execution.
         """
         self._running = True
         try:
@@ -115,8 +139,13 @@ class TaskPoller:
                         )
                         break
                     self._in_flight.add(task.task_id)
+
+                    # Register task for signal monitoring if signal poller is available.
+                    if signal_poller is not None:
+                        signal_poller.register_task(task.task_id)
+
                     asyncio.create_task(
-                        self._dispatch(task, executor, streamer),
+                        self._dispatch(task, executor, streamer, signal_poller),
                         name=f"fleet-task-{task.task_id}",
                     )
 
@@ -136,14 +165,23 @@ class TaskPoller:
         task: PendingTask,
         executor: LocalExecutor,
         streamer: EventStreamer,
+        signal_poller: SignalPoller | None = None,
     ) -> None:
         """Execute a single task and stream events back."""
         logger.info("Dispatching task %s (workflow %s)", task.task_id, task.workflow_id)
         try:
-            events = executor.execute(task)
+            events = executor.execute(task, signal_poller=signal_poller)
             await streamer.stream(task.task_id, events)
+        except TaskRedirectedError:
+            logger.info(
+                "Task %s redirected — new task will be picked up on next poll",
+                task.task_id,
+            )
         except Exception:
             logger.exception("Unhandled error dispatching task %s", task.task_id)
         finally:
+            # Unregister from signal monitoring.
+            if signal_poller is not None:
+                signal_poller.unregister_task(task.task_id)
             self._in_flight.discard(task.task_id)
             logger.info("Task %s completed, removed from in-flight", task.task_id)
