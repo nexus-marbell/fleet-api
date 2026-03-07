@@ -72,7 +72,7 @@ class TestPoll:
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
 
-            tasks = await poller.poll()
+            await poller.poll()
 
             mock_client.get.assert_called_once()
             call_args = mock_client.get.call_args

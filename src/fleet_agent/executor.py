@@ -77,7 +77,7 @@ class LocalExecutor:
             async for event in self._read_events(process, sequence, timeout):
                 sequence = event.sequence
                 yield event
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
             stderr_bytes = b""

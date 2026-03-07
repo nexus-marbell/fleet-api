@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -76,8 +77,6 @@ class TestSignRequest:
         public_key = private_key.public_key()
 
         with patch("fleet_agent.signing.datetime") as mock_dt:
-            from datetime import UTC, datetime
-
             fixed_ts = datetime(2026, 3, 7, 12, 0, 0, tzinfo=UTC)
             mock_dt.now.return_value = fixed_ts
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
