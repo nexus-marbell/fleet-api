@@ -85,7 +85,8 @@ async def self_register(config: SidecarConfig, private_key: Ed25519PrivateKey) -
                 )
                 return
 
-            # Non-retryable client error (4xx except 409 which is still ok for idempotency)
+            # Non-retryable client error (409 = agent_id conflict with different
+            # public key, not idempotent re-registration which returns 200)
             if 400 <= response.status_code < 500:
                 logger.error(
                     "Registration rejected by fleet-api: %d %s",
