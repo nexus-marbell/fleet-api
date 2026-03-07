@@ -1,4 +1,4 @@
-"""Task business logic — creation, dispatch, read, and list operations."""
+"""Task business logic — creation, dispatch, read, list, and cancel operations."""
 
 from __future__ import annotations
 
@@ -15,12 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.agents.models import Agent, AgentStatus
 from fleet_api.errors import (
+    AuthError,
     ErrorCode,
     InfrastructureError,
     InputValidationError,
     NotFoundError,
+    StateError,
 )
 from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
+from fleet_api.tasks.state_machine import InvalidStateTransition
 from fleet_api.workflows.models import Workflow
 
 # ---------------------------------------------------------------------------
@@ -221,6 +224,105 @@ def decode_task_cursor(cursor: str) -> tuple[str, datetime]:
             message="Invalid pagination cursor.",
             suggestion="Use the cursor value returned from a previous list response.",
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Standalone cancel operation
+# ---------------------------------------------------------------------------
+
+
+async def cancel_task(
+    session: AsyncSession,
+    workflow_id: str,
+    task_id: str,
+    cancelled_by: str,
+    reason: str | None = None,
+) -> Task:
+    """Cancel a task in accepted, running, or paused state.
+
+    Args:
+        session: Database session.
+        workflow_id: Workflow the task belongs to.
+        task_id: Task to cancel.
+        cancelled_by: Agent requesting cancellation.
+        reason: Optional human-readable reason.
+
+    Returns:
+        The cancelled Task.
+
+    Raises:
+        NotFoundError: Workflow or task not found.
+        AuthError: Caller is not the task principal or workflow owner.
+        StateError: Task is in a terminal state and cannot be cancelled.
+    """
+    # 1. Fetch workflow
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise NotFoundError(
+            code=ErrorCode.WORKFLOW_NOT_FOUND,
+            message=f"Workflow '{workflow_id}' not found.",
+            suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+            links={"list": {"href": "/workflows"}},
+        )
+
+    # 2. Fetch task and verify it belongs to this workflow
+    task = await session.get(Task, task_id)
+    if task is None or task.workflow_id != workflow_id:
+        raise NotFoundError(
+            code=ErrorCode.TASK_NOT_FOUND,
+            message=f"Task '{task_id}' not found in workflow '{workflow_id}'.",
+            suggestion="Check the task ID. Use GET /workflows/{workflow_id}/tasks to list tasks.",
+            links={"workflow": {"href": f"/workflows/{workflow_id}"}},
+        )
+
+    # 3. Authorization: caller must be task principal or workflow owner
+    if cancelled_by != task.principal_agent_id and cancelled_by != workflow.owner_agent_id:
+        raise AuthError(
+            code=ErrorCode.NOT_AUTHORIZED,
+            message="Only the task caller or workflow owner may cancel this task.",
+            suggestion="Authenticate as the task's principal agent or the workflow owner.",
+        )
+
+    # 4. Attempt state transition
+    old_status = task.status
+    try:
+        task.transition_to(TaskStatus.CANCELLED)
+    except InvalidStateTransition:
+        raise StateError(
+            code=ErrorCode.TASK_NOT_PAUSABLE,
+            message=(
+                f"Task '{task_id}' cannot be cancelled. "
+                f"Current status: '{task.status.value}'. "
+                f"Only tasks with status 'accepted', 'running', or 'paused' can be cancelled."
+            ),
+        )
+
+    # 5. Create TaskEvent
+    max_seq_result = await session.execute(
+        select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+            TaskEvent.task_id == task.id
+        )
+    )
+    next_sequence = max_seq_result.scalar_one() + 1
+
+    event = TaskEvent(
+        task_id=task.id,
+        event_type="status",
+        data={
+            "from_status": old_status.value,
+            "to_status": "cancelled",
+            "reason": reason,
+            "cancelled_by": cancelled_by,
+        },
+        sequence=next_sequence,
+    )
+    session.add(event)
+
+    # 6. Commit
+    await session.commit()
+    await session.refresh(task)
+
+    return task
 
 
 # ---------------------------------------------------------------------------
