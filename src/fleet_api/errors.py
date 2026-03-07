@@ -5,7 +5,7 @@ from typing import Any
 
 
 class ErrorCode(StrEnum):
-    """All 24 fleet-api error codes from RFC 1 S8."""
+    """All 25 fleet-api error codes (24 from RFC 1 S8 + AGENT_EXISTS)."""
 
     # Routing
     ENDPOINT_NOT_FOUND = "ENDPOINT_NOT_FOUND"
@@ -22,6 +22,7 @@ class ErrorCode(StrEnum):
 
     # Conflict
     WORKFLOW_EXISTS = "WORKFLOW_EXISTS"
+    AGENT_EXISTS = "AGENT_EXISTS"
 
     # Validation
     INVALID_INPUT = "INVALID_INPUT"
@@ -64,6 +65,7 @@ ERROR_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.TIMESTAMP_EXPIRED: 401,
     ErrorCode.NOT_AUTHORIZED: 403,
     ErrorCode.WORKFLOW_EXISTS: 409,
+    ErrorCode.AGENT_EXISTS: 409,
     ErrorCode.INVALID_INPUT: 422,
     ErrorCode.IDEMPOTENCY_MISMATCH: 422,
     ErrorCode.RATE_LIMITED: 429,
