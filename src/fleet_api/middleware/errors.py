@@ -1,0 +1,1 @@
+"""Standardized error handling middleware."""
