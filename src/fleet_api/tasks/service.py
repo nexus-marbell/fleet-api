@@ -15,6 +15,7 @@ from sqlalchemy import func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.agents.models import Agent, AgentStatus
+from fleet_api.config import settings
 from fleet_api.errors import (
     AuthError,
     ErrorCode,
@@ -327,6 +328,228 @@ async def cancel_task(
     await session.refresh(task)
 
     return task
+
+
+# ---------------------------------------------------------------------------
+# Retask operation
+# ---------------------------------------------------------------------------
+
+
+async def retask_task(
+    session: AsyncSession,
+    workflow_id: str,
+    task_id: str,
+    caller_agent_id: str,
+    refinement: dict[str, Any],
+    priority: str | None = None,
+) -> tuple[Task, Task]:
+    """Retask a completed or failed task with refinement instructions.
+
+    Creates a new task linked to the original via parent_task_id/root_task_id,
+    transitions the original task to RETASKED, and records a status event.
+
+    Args:
+        session: Database session.
+        workflow_id: Workflow the task belongs to.
+        task_id: Original task to retask.
+        caller_agent_id: Agent requesting the retask.
+        refinement: Refinement instructions (message, additional_input, constraints).
+        priority: Optional priority override for the new task.
+
+    Returns:
+        (new_task, original_task) tuple.
+
+    Raises:
+        NotFoundError: Workflow or task not found.
+        AuthError: Caller is not the task principal or workflow owner.
+        StateError: Task is not in completed/failed state.
+        InputValidationError: Retask depth exceeded.
+    """
+    # 1. Fetch workflow
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise NotFoundError(
+            code=ErrorCode.WORKFLOW_NOT_FOUND,
+            message=f"Workflow '{workflow_id}' not found.",
+            suggestion="Check the workflow ID. Use GET /workflows to list available workflows.",
+            links={"list": {"href": "/workflows"}},
+        )
+
+    # 2. Fetch task and verify it belongs to this workflow
+    task = await session.get(Task, task_id)
+    if task is None or task.workflow_id != workflow_id:
+        raise NotFoundError(
+            code=ErrorCode.TASK_NOT_FOUND,
+            message=f"Task '{task_id}' not found in workflow '{workflow_id}'.",
+            suggestion="Check the task ID. Use GET /workflows/{workflow_id}/tasks to list tasks.",
+            links={"workflow": {"href": f"/workflows/{workflow_id}"}},
+        )
+
+    # 3. Authorization: caller must be task principal or workflow owner
+    if caller_agent_id != task.principal_agent_id and caller_agent_id != workflow.owner_agent_id:
+        raise AuthError(
+            code=ErrorCode.NOT_AUTHORIZED,
+            message="Only the task caller or workflow owner may retask this task.",
+            suggestion="Authenticate as the task's principal agent or the workflow owner.",
+        )
+
+    # 4. Validate task state (must be completed or failed)
+    if task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        raise StateError(
+            code=ErrorCode.RETASK_NOT_REVIEWABLE,
+            message=(
+                f"Task '{task_id}' cannot be retasked. "
+                f"Current status: '{task.status.value}'. "
+                f"Only tasks with status 'completed' or 'failed' can be retasked."
+            ),
+        )
+
+    # 5. Check retask depth limit
+    if task.retask_depth >= settings.fleet_retask_max_depth:
+        raise InputValidationError(
+            code=ErrorCode.RETASK_DEPTH_EXCEEDED,
+            message=(
+                f"Retask depth limit ({settings.fleet_retask_max_depth}) exceeded. "
+                f"Task '{task_id}' is already at depth {task.retask_depth}."
+            ),
+            suggestion="The retask chain has reached its maximum depth. Start a new task instead.",
+        )
+
+    # 6. Transition original task to RETASKED
+    #    Status is already validated as COMPLETED or FAILED (step 4), and
+    #    both have RETASKED as a valid transition, so this cannot fail.
+    old_status = task.status
+    task.transition_to(TaskStatus.RETASKED)
+
+    # 7. Determine lineage
+    root_task_id = task.root_task_id or task.id
+    new_retask_depth = task.retask_depth + 1
+
+    # 8. Build merged input
+    merged_input = dict(task.input) if task.input else {}
+    additional_input = refinement.get("additional_input")
+    if additional_input:
+        merged_input.update(additional_input)
+
+    # 9. Resolve priority
+    if priority is not None:
+        try:
+            priority_enum = TaskPriority(priority)
+        except ValueError:
+            valid = ", ".join(p.value for p in TaskPriority)
+            raise InputValidationError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid priority '{priority}'. Must be one of: {valid}.",
+                suggestion=f"Use one of: {valid}.",
+            )
+    else:
+        priority_enum = (
+            task.priority
+            if isinstance(task.priority, TaskPriority)
+            else TaskPriority(task.priority)
+        )
+
+    # 10. Create new task
+    new_task_id = f"task-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(UTC)
+
+    new_task = Task(
+        id=new_task_id,
+        workflow_id=workflow_id,
+        principal_agent_id=task.principal_agent_id,
+        executor_agent_id=task.executor_agent_id,
+        status=TaskStatus.ACCEPTED,
+        input=merged_input,
+        priority=priority_enum,
+        timeout_seconds=task.timeout_seconds,
+        parent_task_id=task.id,
+        root_task_id=root_task_id,
+        retask_depth=new_retask_depth,
+        delegation_depth=task.delegation_depth,
+        created_at=now,
+        metadata_={"refinement": refinement},
+    )
+    session.add(new_task)
+
+    # 11. Create status event on original task
+    max_seq_result = await session.execute(
+        select(func.coalesce(func.max(TaskEvent.sequence), 0)).where(
+            TaskEvent.task_id == task.id
+        )
+    )
+    next_sequence = max_seq_result.scalar_one() + 1
+
+    event = TaskEvent(
+        task_id=task.id,
+        event_type="status",
+        data={
+            "from_status": old_status.value,
+            "to_status": "retasked",
+            "retask_id": new_task_id,
+            "retasked_by": caller_agent_id,
+            "refinement_message": refinement.get("message"),
+        },
+        sequence=next_sequence,
+        created_at=now,
+    )
+    session.add(event)
+
+    # 12. Create initial event on new task
+    new_event = TaskEvent(
+        task_id=new_task_id,
+        event_type="created",
+        sequence=1,
+        data={"status": "accepted", "caller": task.principal_agent_id, "retask_of": task.id},
+        created_at=now,
+    )
+    session.add(new_event)
+
+    # 13. Commit
+    await session.commit()
+    await session.refresh(new_task)
+    await session.refresh(task)
+
+    return new_task, task
+
+
+async def build_lineage_chain(
+    session: AsyncSession,
+    task: Task,
+) -> list[str]:
+    """Build the lineage chain from root to current task.
+
+    Walks parent_task_id links from the given task up to the root,
+    then reverses to get root-first order.
+    """
+    chain = [task.id]
+    current_parent_id = task.parent_task_id
+
+    # Walk up to root (limit iterations for safety)
+    for _ in range(task.retask_depth):
+        if current_parent_id is None:
+            break
+        parent = await session.get(Task, current_parent_id)
+        if parent is None:
+            break
+        chain.append(parent.id)
+        current_parent_id = parent.parent_task_id
+
+    chain.reverse()
+    return chain
+
+
+async def count_context_injections(
+    session: AsyncSession,
+    task_id: str,
+) -> int:
+    """Count context_injected events on a task."""
+    result = await session.execute(
+        select(func.count()).where(
+            TaskEvent.task_id == task_id,
+            TaskEvent.event_type == "context_injected",
+        )
+    )
+    return result.scalar_one()
 
 
 # ---------------------------------------------------------------------------
