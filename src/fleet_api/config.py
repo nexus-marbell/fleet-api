@@ -17,9 +17,6 @@ class Settings(BaseSettings):
     api_version: str = "1.0.0"
     base_url: str = "http://localhost:8000"
 
-    # Server key (for deriving server public key in manifest)
-    server_private_key_path: str | None = None
-
     # Rate limiting
     rate_limit_rpm: int = 120
     rate_limit_burst: int = 20

@@ -34,7 +34,7 @@ def _build_manifest() -> dict[str, Any]:
             "header": "Authorization",
             "format": "Signature <agent_id>:<base64_signature>",
             "key_registration": "/agents/register",
-            "server_public_key": None,
+            "server_public_key": None,  # Phase 2: callback verification
         },
         "capabilities": [
             "workflow_registry",
