@@ -53,7 +53,7 @@ Fleet API (centralized, Dokploy)
 
 ## Current Status
 
-**Phase 1 + 1.5: Complete.** 20 PRs merged, 479 tests, zero cognitive debt carried forward.
+**Phase 1 + 1.5: Complete.** 18 PRs merged, 485 tests, zero cognitive debt carried forward.
 
 What's implemented:
 - Agent registration with Ed25519 public key authentication
@@ -61,7 +61,7 @@ What's implemented:
 - Full task lifecycle: create, accept, run, complete, fail, cancel
 - Task state machine with enforced transitions (8 states, validated)
 - Sidecar with self-registration, heartbeat loop, and configurable executor
-- Heartbeat timeout monitoring (marks agents UNREACHABLE after 300s)
+- Heartbeat timeout monitoring (marks agents UNREACHABLE after 90s)
 - Containerized deployment (separate API and sidecar Dockerfiles)
 - Pull-based task dispatch with exponential backoff
 - HATEOAS navigation, structured errors, onboarding flow
@@ -143,7 +143,7 @@ fleet-api/
       database/             # SQLAlchemy async, migrations
       app.py                # FastAPI factory with lifespan
     fleet_agent/            # Sidecar (polling, dispatch, heartbeat)
-  tests/                    # 479 tests
+  tests/                    # 485 tests
   docs/                     # RFCs
   alembic/                  # Database migrations
 ```
