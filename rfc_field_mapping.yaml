@@ -1,0 +1,120 @@
+# RFC Field Mapping — Single source of truth for API response field names.
+#
+# This file defines the canonical field names per resource type as specified
+# in RFC 1 (Agentic Task API). Any response builder that outputs a field
+# not listed here will fail the validation test.
+#
+# When adding new fields: add them here FIRST, then implement.
+# This prevents RFC field drift (the pattern where code uses a different
+# name than the spec, caught repeatedly during Phase 2 review).
+#
+# Reference: nexus-marbell/fleet-api RFC 1 (Issues #1, #2)
+
+task_detail:
+  # Core fields (RFC §3.5)
+  - task_id
+  - workflow_id
+  - status
+  - caller           # RFC name for principal_agent_id
+  - executor         # RFC name for executor_agent_id
+  - priority
+  - input
+  - created_at
+  - started_at
+  - completed_at
+  - duration_seconds
+  - result
+  - parent_task_id
+  - root_task_id
+  - lineage_depth
+  - delegation_depth
+  - callback_url
+  - metadata
+  - _links
+  - quality          # RFC §3.5 quality object
+  - idempotency      # Idempotency block in response
+  - warnings         # RFC Pattern 8
+  - progress         # RFC §3.5 progress percentage
+  - estimated_completion  # RFC §3.5 estimated completion time
+
+task_summary:
+  # Subset for list responses (RFC §3.5)
+  - task_id
+  - status
+  - caller
+  - created_at
+  - started_at
+  - completed_at
+  - duration_seconds
+  - _links
+
+task_event:
+  # SSE event data fields (RFC §3.7)
+  - event_type
+  - task_id
+  - status
+  - caller
+  - data
+  - sequence
+  - created_at
+  - retask_of         # In retask events
+
+lifecycle_event_data:
+  # Fields inside event data for lifecycle transitions
+  - from_status
+  - to_status
+  - reason
+  - cancelled_by
+  - retask_id
+  - retasked_by
+  - refinement_message
+  - redirect_id
+  - redirected_by
+  - redirect_reason
+  - paused_by
+  - pause_reason
+  - resumed_by
+  - resume_reason
+
+context_injection:
+  # Context injection fields (RFC §3.12)
+  - context_id
+  - context_type
+  - context_sequence
+  - payload
+  - injected_by
+  - injected_at
+
+hateoas_links:
+  # Standard link relations (RFC §3.6)
+  - self
+  - workflow
+  - stream
+  - cancel
+  - pause
+  - resume
+  - context
+  - redirect
+  - retask
+  - rerun
+  - list
+  - next
+  - prev
+
+error_response:
+  # Standard error fields (RFC Pattern 3)
+  - error
+  - code
+  - suggestion
+  - _links
+  - details
+
+manifest:
+  # Manifest fields (RFC §3.1, Pattern 1)
+  - api_name
+  - version
+  - capabilities
+  - auth
+  - rate_limits
+  - schema_changelog
+  - _links
