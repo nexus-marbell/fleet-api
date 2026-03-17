@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
+from fleet_api.tasks.models import Task, TaskPriority, TaskStatus
 from fleet_api.tasks.service import (
     build_task_links,
     task_to_detail_response,
