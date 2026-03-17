@@ -15,14 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fleet_api.agents.models import Agent, AgentStatus
 from fleet_api.errors import (
-    AuthError,
     ErrorCode,
     InfrastructureError,
     InputValidationError,
     NotFoundError,
-    StateError,
 )
-from fleet_api.tasks.callbacks import schedule_callback
 from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
 from fleet_api.tasks.responses import (
     IDEMPOTENCY_TTL_HOURS,
@@ -30,7 +27,6 @@ from fleet_api.tasks.responses import (
     decode_task_cursor,
     encode_task_cursor,
 )
-from fleet_api.tasks.state_machine import InvalidStateTransition, is_terminal
 from fleet_api.workflows.models import Workflow
 
 logger = logging.getLogger(__name__)

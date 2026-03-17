@@ -20,6 +20,7 @@ from fleet_api.errors import (
     AuthError,
     ErrorCode,
     InputValidationError,
+    NotFoundError,
     StateError,
 )
 from fleet_api.tasks.callbacks import schedule_callback
@@ -73,8 +74,6 @@ async def process_sidecar_event(
         InputValidationError: Invalid event_type or out-of-order sequence.
         StateError: Invalid status transition.
     """
-    from fleet_api.errors import NotFoundError
-
     # 1. Validate event_type
     if event_type not in _VALID_EVENT_TYPES:
         valid = ", ".join(sorted(_VALID_EVENT_TYPES))
