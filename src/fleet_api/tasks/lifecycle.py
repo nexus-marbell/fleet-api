@@ -207,27 +207,27 @@ async def retask_task(
             suggestion="The retask chain has reached its maximum depth. Start a new task instead.",
         )
 
-    # 6. Transition original task to RETASKED
-    #    Status is already validated as COMPLETED or FAILED (step 4), and
-    #    both have RETASKED as a valid transition, so this cannot fail.
-    old_status = task.status
-    task.transition_to(TaskStatus.RETASKED)
-
-    # 7. Determine lineage
-    root_task_id = task.root_task_id or task.id
-    new_lineage_depth = task.lineage_depth + 1
-
-    # 8. Build merged input
+    # 6. Build merged input (before state transition — needed for idempotency check)
     merged_input = dict(task.input) if task.input else {}
     additional_input = refinement.get("additional_input")
     if additional_input:
         merged_input.update(additional_input)
 
-    # 8b. Idempotency check (before creating the new task)
+    # 6b. Idempotency check (before state transition — must not mutate task on replay)
     if idempotency_key is not None:
         existing = await check_idempotency(session, idempotency_key, merged_input)
         if existing is not None:
             return existing, task, True
+
+    # 7. Transition original task to RETASKED
+    #    Status is already validated as COMPLETED or FAILED (step 4), and
+    #    both have RETASKED as a valid transition, so this cannot fail.
+    old_status = task.status
+    task.transition_to(TaskStatus.RETASKED)
+
+    # 8. Determine lineage
+    root_task_id = task.root_task_id or task.id
+    new_lineage_depth = task.lineage_depth + 1
 
     # 9. Resolve priority
     if priority is not None:
