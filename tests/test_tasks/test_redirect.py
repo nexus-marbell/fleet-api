@@ -205,7 +205,7 @@ class TestRedirectFromRunning:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -235,7 +235,7 @@ class TestRedirectFromRunning:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -276,7 +276,7 @@ class TestRedirectFromPaused:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -313,7 +313,7 @@ class TestRedirectAuthorization:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_redirect,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -340,7 +340,7 @@ class TestRedirectAuthorization:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -534,7 +534,7 @@ class TestRedirectLineage:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -572,7 +572,7 @@ class TestRedirectLineage:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -603,7 +603,7 @@ class TestRedirectLineage:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -638,7 +638,7 @@ class TestRedirectInheritProgress:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_redirect,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -667,7 +667,7 @@ class TestRedirectInheritProgress:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_redirect,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -706,7 +706,7 @@ class TestRedirectPriority:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_redirect,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -735,7 +735,7 @@ class TestRedirectPriority:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_redirect,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -776,7 +776,7 @@ class TestRedirectHATEOASLinks:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -814,7 +814,7 @@ class TestRedirectHATEOASLinks:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1161,7 +1161,7 @@ class TestRedirectResponseFormat:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1188,7 +1188,7 @@ class TestRedirectResponseFormat:
             patch(
                 "fleet_api.tasks.routes.redirect_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1203,3 +1203,132 @@ class TestRedirectResponseFormat:
         data = response.json()
         assert "executor" in data
         assert "executor_agent_id" not in data
+
+
+# ---------------------------------------------------------------------------
+# Redirect idempotency — Issue #44
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectIdempotency:
+    """Idempotency-Key header on redirect endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_redirect_replay_returns_200(self) -> None:
+        """Same Idempotency-Key + same input returns 200 with replayed status."""
+        app = _create_test_app()
+        new_task = _make_new_task()
+        new_task.idempotency_key = "redirect-key-1"
+        original_task = _make_original_task(status=TaskStatus.REDIRECTED)
+
+        with (
+            patch(
+                "fleet_api.tasks.routes.redirect_task",
+                new_callable=AsyncMock,
+                return_value=(new_task, original_task, True),
+            ),
+            patch(
+                "fleet_api.tasks.routes.build_lineage_chain",
+                new_callable=AsyncMock,
+                return_value=[TASK_ID, NEW_TASK_ID],
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    _url(),
+                    json=_redirect_body(),
+                    headers={"Idempotency-Key": "redirect-key-1"},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["idempotency"]["status"] == "replayed"
+        assert data["idempotency"]["key"] == "redirect-key-1"
+        assert data["idempotency"]["expires_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_redirect_new_key_returns_201_with_idempotency_block(self) -> None:
+        """New Idempotency-Key returns 201 with idempotency status 'created'."""
+        app = _create_test_app()
+        new_task = _make_new_task()
+        new_task.idempotency_key = "redirect-key-new"
+        original_task = _make_original_task(status=TaskStatus.REDIRECTED)
+
+        with (
+            patch(
+                "fleet_api.tasks.routes.redirect_task",
+                new_callable=AsyncMock,
+                return_value=(new_task, original_task, False),
+            ),
+            patch(
+                "fleet_api.tasks.routes.build_lineage_chain",
+                new_callable=AsyncMock,
+                return_value=[TASK_ID, NEW_TASK_ID],
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    _url(),
+                    json=_redirect_body(),
+                    headers={"Idempotency-Key": "redirect-key-new"},
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["idempotency"]["status"] == "created"
+        assert data["idempotency"]["key"] == "redirect-key-new"
+
+    @pytest.mark.asyncio
+    async def test_redirect_mismatch_returns_422(self) -> None:
+        """Same Idempotency-Key + different input returns 422."""
+        app = _create_test_app()
+
+        with patch(
+            "fleet_api.tasks.routes.redirect_task",
+            new_callable=AsyncMock,
+            side_effect=InputValidationError(
+                code=ErrorCode.IDEMPOTENCY_MISMATCH,
+                message="Idempotency key 'redirect-key-1' was already used with different input.",
+                suggestion="Use a new idempotency key for different input.",
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    _url(),
+                    json=_redirect_body(),
+                    headers={"Idempotency-Key": "redirect-key-1"},
+                )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["code"] == "IDEMPOTENCY_MISMATCH"
+
+    @pytest.mark.asyncio
+    async def test_redirect_no_key_no_idempotency_block(self) -> None:
+        """Without Idempotency-Key header, no idempotency block in response."""
+        app = _create_test_app()
+        new_task = _make_new_task()
+        original_task = _make_original_task(status=TaskStatus.REDIRECTED)
+
+        with (
+            patch(
+                "fleet_api.tasks.routes.redirect_task",
+                new_callable=AsyncMock,
+                return_value=(new_task, original_task, False),
+            ),
+            patch(
+                "fleet_api.tasks.routes.build_lineage_chain",
+                new_callable=AsyncMock,
+                return_value=[TASK_ID, NEW_TASK_ID],
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(_url(), json=_redirect_body())
+
+        assert response.status_code == 201
+        data = response.json()
+        assert "idempotency" not in data

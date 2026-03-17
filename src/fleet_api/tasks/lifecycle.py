@@ -17,6 +17,7 @@ from fleet_api.errors import (
     NotFoundError,
     StateError,
 )
+from fleet_api.tasks.crud import check_idempotency
 from fleet_api.tasks.models import Task, TaskEvent, TaskPriority, TaskStatus
 from fleet_api.tasks.state_machine import InvalidStateTransition
 from fleet_api.workflows.models import Workflow
@@ -130,7 +131,8 @@ async def retask_task(
     caller_agent_id: str,
     refinement: dict[str, Any],
     priority: str | None = None,
-) -> tuple[Task, Task]:
+    idempotency_key: str | None = None,
+) -> tuple[Task, Task, bool]:
     """Retask a completed or failed task with refinement instructions.
 
     Creates a new task linked to the original via parent_task_id/root_task_id,
@@ -143,15 +145,17 @@ async def retask_task(
         caller_agent_id: Agent requesting the retask.
         refinement: Refinement instructions (message, additional_input, constraints).
         priority: Optional priority override for the new task.
+        idempotency_key: Optional idempotency key for the new task.
 
     Returns:
-        (new_task, original_task) tuple.
+        (new_task, original_task, is_replay) tuple.  is_replay is True when
+        an existing task was returned via idempotency replay.
 
     Raises:
         NotFoundError: Workflow or task not found.
         AuthError: Caller is not the task principal or workflow owner.
         StateError: Task is not in completed/failed state.
-        InputValidationError: Retask depth exceeded.
+        InputValidationError: Retask depth exceeded or idempotency mismatch.
     """
     # 1. Fetch workflow
     workflow = await session.get(Workflow, workflow_id)
@@ -203,21 +207,27 @@ async def retask_task(
             suggestion="The retask chain has reached its maximum depth. Start a new task instead.",
         )
 
-    # 6. Transition original task to RETASKED
+    # 6. Build merged input (before state transition — needed for idempotency check)
+    merged_input = dict(task.input) if task.input else {}
+    additional_input = refinement.get("additional_input")
+    if additional_input:
+        merged_input.update(additional_input)
+
+    # 6b. Idempotency check (before state transition — must not mutate task on replay)
+    if idempotency_key is not None:
+        existing = await check_idempotency(session, idempotency_key, merged_input)
+        if existing is not None:
+            return existing, task, True
+
+    # 7. Transition original task to RETASKED
     #    Status is already validated as COMPLETED or FAILED (step 4), and
     #    both have RETASKED as a valid transition, so this cannot fail.
     old_status = task.status
     task.transition_to(TaskStatus.RETASKED)
 
-    # 7. Determine lineage
+    # 8. Determine lineage
     root_task_id = task.root_task_id or task.id
     new_lineage_depth = task.lineage_depth + 1
-
-    # 8. Build merged input
-    merged_input = dict(task.input) if task.input else {}
-    additional_input = refinement.get("additional_input")
-    if additional_input:
-        merged_input.update(additional_input)
 
     # 9. Resolve priority
     if priority is not None:
@@ -255,6 +265,7 @@ async def retask_task(
         lineage_depth=new_lineage_depth,
         delegation_depth=task.delegation_depth,
         created_at=now,
+        idempotency_key=idempotency_key,
         metadata_={"refinement": refinement},
     )
     session.add(new_task)
@@ -295,7 +306,7 @@ async def retask_task(
     await session.refresh(new_task)
     await session.refresh(task)
 
-    return new_task, task
+    return new_task, task, False
 
 
 async def build_lineage_chain(
@@ -338,7 +349,8 @@ async def redirect_task(
     new_input: dict[str, Any],
     inherit_progress: bool = False,
     priority: str | None = None,
-) -> tuple[Task, Task]:
+    idempotency_key: str | None = None,
+) -> tuple[Task, Task, bool]:
     """Redirect a running or paused task with new input.
 
     Transitions the original task to REDIRECTED and creates a new task with
@@ -355,15 +367,17 @@ async def redirect_task(
         new_input: Input for the new task (replaces original input entirely).
         inherit_progress: Whether new task inherits progress metadata.
         priority: Optional priority override for the new task.
+        idempotency_key: Optional idempotency key for the new task.
 
     Returns:
-        (new_task, original_task) tuple.
+        (new_task, original_task, is_replay) tuple.  is_replay is True when
+        an existing task was returned via idempotency replay.
 
     Raises:
         NotFoundError: Workflow or task not found.
         AuthError: Caller is not the task principal or workflow owner.
         StateError: Task is not in RUNNING or PAUSED state.
-        InputValidationError: Lineage depth exceeded.
+        InputValidationError: Lineage depth exceeded or idempotency mismatch.
     """
     # 1. Fetch workflow
     workflow = await session.get(Workflow, workflow_id)
@@ -414,6 +428,12 @@ async def redirect_task(
             ),
             suggestion="The lineage chain has reached its maximum depth. Start a new task instead.",
         )
+
+    # 5b. Idempotency check (before transitioning the original task)
+    if idempotency_key is not None:
+        existing = await check_idempotency(session, idempotency_key, new_input)
+        if existing is not None:
+            return existing, task, True
 
     # 6. Transition original task to REDIRECTED
     old_status = task.status
@@ -469,6 +489,7 @@ async def redirect_task(
         lineage_depth=new_lineage_depth,
         delegation_depth=task.delegation_depth,
         created_at=now,
+        idempotency_key=idempotency_key,
         metadata_=new_metadata,
     )
     session.add(new_task)
@@ -513,7 +534,7 @@ async def redirect_task(
     await session.refresh(new_task)
     await session.refresh(task)
 
-    return new_task, task
+    return new_task, task, False
 
 
 # ---------------------------------------------------------------------------

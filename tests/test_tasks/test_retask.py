@@ -197,7 +197,7 @@ class TestRetaskFromCompleted:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -246,7 +246,7 @@ class TestRetaskFromFailed:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -290,7 +290,7 @@ class TestRetaskAuthorization:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_retask,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -325,7 +325,7 @@ class TestRetaskAuthorization:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -527,7 +527,7 @@ class TestRetaskLineage:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -573,7 +573,7 @@ class TestRetaskLineage:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -621,7 +621,7 @@ class TestRetaskInheritedContext:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -659,7 +659,7 @@ class TestRetaskInheritedContext:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -780,7 +780,7 @@ class TestRetaskHATEOASLinks:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -830,7 +830,7 @@ class TestRetaskHATEOASLinks:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -879,7 +879,7 @@ class TestRetaskPriority:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_retask,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -916,7 +916,7 @@ class TestRetaskPriority:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_retask,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1020,7 +1020,7 @@ class TestRetaskResponseFormat:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1059,7 +1059,7 @@ class TestRetaskResponseFormat:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ),
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1105,7 +1105,7 @@ class TestRetaskMergedInput:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_retask,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1143,7 +1143,7 @@ class TestRetaskMergedInput:
             patch(
                 "fleet_api.tasks.routes.retask_task",
                 new_callable=AsyncMock,
-                return_value=(new_task, original_task),
+                return_value=(new_task, original_task, False),
             ) as mock_retask,
             patch(
                 "fleet_api.tasks.routes.build_lineage_chain",
@@ -1434,3 +1434,150 @@ class TestCountContextInjections:
 
         count = await count_context_injections(session, TASK_ID)
         assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Retask idempotency — Issue #44
+# ---------------------------------------------------------------------------
+
+
+class TestRetaskIdempotency:
+    """Idempotency-Key header on retask endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_retask_replay_returns_200(self) -> None:
+        """Same Idempotency-Key + same input returns 200 with replayed status."""
+        app = _create_test_app()
+        new_task = _make_new_task()
+        new_task.idempotency_key = "retask-key-1"
+        original_task = _make_original_task(status=TaskStatus.RETASKED)
+
+        with (
+            patch(
+                "fleet_api.tasks.routes.retask_task",
+                new_callable=AsyncMock,
+                return_value=(new_task, original_task, True),
+            ),
+            patch(
+                "fleet_api.tasks.routes.build_lineage_chain",
+                new_callable=AsyncMock,
+                return_value=[TASK_ID, NEW_TASK_ID],
+            ),
+            patch(
+                "fleet_api.tasks.routes.count_context_injections",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/retask",
+                    json=_retask_body(),
+                    headers={"Idempotency-Key": "retask-key-1"},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["idempotency"]["status"] == "replayed"
+        assert data["idempotency"]["key"] == "retask-key-1"
+        assert data["idempotency"]["expires_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_retask_new_key_returns_201_with_idempotency_block(self) -> None:
+        """New Idempotency-Key returns 201 with idempotency status 'created'."""
+        app = _create_test_app()
+        new_task = _make_new_task()
+        new_task.idempotency_key = "retask-key-new"
+        original_task = _make_original_task(status=TaskStatus.RETASKED)
+
+        with (
+            patch(
+                "fleet_api.tasks.routes.retask_task",
+                new_callable=AsyncMock,
+                return_value=(new_task, original_task, False),
+            ),
+            patch(
+                "fleet_api.tasks.routes.build_lineage_chain",
+                new_callable=AsyncMock,
+                return_value=[TASK_ID, NEW_TASK_ID],
+            ),
+            patch(
+                "fleet_api.tasks.routes.count_context_injections",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/retask",
+                    json=_retask_body(),
+                    headers={"Idempotency-Key": "retask-key-new"},
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["idempotency"]["status"] == "created"
+        assert data["idempotency"]["key"] == "retask-key-new"
+
+    @pytest.mark.asyncio
+    async def test_retask_mismatch_returns_422(self) -> None:
+        """Same Idempotency-Key + different input returns 422."""
+        app = _create_test_app()
+
+        with patch(
+            "fleet_api.tasks.routes.retask_task",
+            new_callable=AsyncMock,
+            side_effect=InputValidationError(
+                code=ErrorCode.IDEMPOTENCY_MISMATCH,
+                message="Idempotency key 'retask-key-1' was already used with different input.",
+                suggestion="Use a new idempotency key for different input.",
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/retask",
+                    json=_retask_body(),
+                    headers={"Idempotency-Key": "retask-key-1"},
+                )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["code"] == "IDEMPOTENCY_MISMATCH"
+
+    @pytest.mark.asyncio
+    async def test_retask_no_key_no_idempotency_block(self) -> None:
+        """Without Idempotency-Key header, no idempotency block in response."""
+        app = _create_test_app()
+        new_task = _make_new_task()
+        original_task = _make_original_task(status=TaskStatus.RETASKED)
+
+        with (
+            patch(
+                "fleet_api.tasks.routes.retask_task",
+                new_callable=AsyncMock,
+                return_value=(new_task, original_task, False),
+            ),
+            patch(
+                "fleet_api.tasks.routes.build_lineage_chain",
+                new_callable=AsyncMock,
+                return_value=[TASK_ID, NEW_TASK_ID],
+            ),
+            patch(
+                "fleet_api.tasks.routes.count_context_injections",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/workflows/{WORKFLOW_ID}/tasks/{TASK_ID}/retask",
+                    json=_retask_body(),
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert "idempotency" not in data

@@ -26,7 +26,7 @@ from fleet_api.tasks.context import (  # noqa: F401
 )
 
 # Re-export: CRUD service
-from fleet_api.tasks.crud import TaskService  # noqa: F401
+from fleet_api.tasks.crud import TaskService, check_idempotency  # noqa: F401
 
 # Re-export: lifecycle operations
 from fleet_api.tasks.lifecycle import (  # noqa: F401
@@ -77,6 +77,7 @@ __all__ = [
     "inject_context",
     # CRUD
     "TaskService",
+    "check_idempotency",
     "process_sidecar_event",
     # Callback (for test patching compatibility)
     "schedule_callback",

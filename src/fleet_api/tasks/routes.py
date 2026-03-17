@@ -23,6 +23,7 @@ from fleet_api.database.connection import get_session
 from fleet_api.middleware.auth import AuthenticatedAgent, require_auth
 from fleet_api.tasks.models import Task
 from fleet_api.tasks.service import (
+    IDEMPOTENCY_TTL_HOURS,
     TaskService,
     build_lineage_chain,
     build_task_links,
@@ -379,22 +380,24 @@ async def retask_task_endpoint(
     body: TaskRetaskRequest,
     agent: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> Any:
     """Retask a completed or failed task with refinement instructions.
 
     Creates a new task linked to the original with lineage tracking.
     Returns 201 Created with the new task and lineage information.
+    Returns 200 OK for idempotent replays (same key + same input).
     """
-    # TODO(Phase 2 Wave 3): Idempotency-Key support deferred — see Issue #44
     refinement_dict = body.refinement.model_dump(exclude_none=True)
 
-    new_task, original_task = await retask_task(
+    new_task, original_task, is_replay = await retask_task(
         session=session,
         workflow_id=workflow_id,
         task_id=task_id,
         caller_agent_id=agent.agent_id,
         refinement=refinement_dict,
         priority=body.priority,
+        idempotency_key=idempotency_key,
     )
 
     # Build lineage chain
@@ -443,6 +446,22 @@ async def retask_task_endpoint(
         "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
     }
 
+    # Add idempotency block when key was provided
+    if idempotency_key is not None:
+        expires_at = (
+            new_task.created_at + timedelta(hours=IDEMPOTENCY_TTL_HOURS)
+            if new_task.created_at
+            else None
+        )
+        response_data["idempotency"] = {
+            "key": idempotency_key,
+            "status": "replayed" if is_replay else "created",
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        }
+
+    if is_replay:
+        return JSONResponse(status_code=200, content=response_data)
+
     return JSONResponse(status_code=201, content=response_data)
 
 
@@ -458,16 +477,16 @@ async def redirect_task_endpoint(
     body: TaskRedirectRequest,
     agent: AuthenticatedAgent = Depends(require_auth),
     session: AsyncSession = Depends(get_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> Any:
     """Redirect a running or paused task with new input.
 
     Transitions the original task to REDIRECTED and creates a new task
     with the provided new_input. Returns 201 Created with the new task
     and lineage information.
+    Returns 200 OK for idempotent replays (same key + same input).
     """
-    # TODO(Phase 2 Wave 3): Idempotency-Key support deferred — see Issue #44
-
-    new_task, original_task = await redirect_task(
+    new_task, original_task, is_replay = await redirect_task(
         session=session,
         workflow_id=workflow_id,
         task_id=task_id,
@@ -476,6 +495,7 @@ async def redirect_task_endpoint(
         new_input=body.new_input,
         inherit_progress=body.inherit_progress,
         priority=body.priority,
+        idempotency_key=idempotency_key,
     )
 
     # Build lineage chain
@@ -515,6 +535,22 @@ async def redirect_task_endpoint(
     response_data["_links"]["redirected_from"] = {
         "href": f"/workflows/{workflow_id}/tasks/{original_task.id}",
     }
+
+    # Add idempotency block when key was provided
+    if idempotency_key is not None:
+        expires_at = (
+            new_task.created_at + timedelta(hours=IDEMPOTENCY_TTL_HOURS)
+            if new_task.created_at
+            else None
+        )
+        response_data["idempotency"] = {
+            "key": idempotency_key,
+            "status": "replayed" if is_replay else "created",
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        }
+
+    if is_replay:
+        return JSONResponse(status_code=200, content=response_data)
 
     return JSONResponse(status_code=201, content=response_data)
 
