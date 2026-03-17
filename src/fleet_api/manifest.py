@@ -9,7 +9,6 @@ Unauthenticated (listed in UNPROTECTED_PATHS).
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter
@@ -40,10 +39,19 @@ def _build_manifest() -> dict[str, Any]:
         "capabilities": [
             "workflow_registry",
             "task_dispatch",
+            "sse_streaming",
+            "pause_resume",
+            "context_injection",
+            "retask_with_lineage",
+            "redirect",
+            "callback_signing",
+            "idempotent_writes",
+            "pull_dispatch",
+            "agent_heartbeat",
         ],
         "rate_limits": {
-            "requests_per_minute": settings.rate_limit_rpm,
-            "burst": settings.rate_limit_burst,
+            "status": "planned",
+            "description": "Rate limiting is not yet enforced by middleware",
         },
         "parameter_conventions": {
             "limit": {
@@ -71,6 +79,24 @@ def _build_manifest() -> dict[str, Any]:
                 "changes": ["Initial release -- manifest, agents, workflows, tasks"],
                 "breaking": False,
             },
+            {
+                "version": "1.1.0",
+                "date": "2026-03-17",
+                "changes": [
+                    "SSE streaming for task events",
+                    "Pause/resume task lifecycle",
+                    "Context injection",
+                    "Retask with lineage tracking",
+                    "Redirect tasks between agents",
+                    "Ed25519 callback signing",
+                    "Idempotent writes via Idempotency-Key",
+                    "Pull dispatch for agents",
+                    "Agent heartbeat monitoring",
+                    "Removed phantom _links (tools, errors)",
+                    "Rate limits marked as planned (no enforcement middleware)",
+                ],
+                "breaking": False,
+            },
         ],
         "_links": {
             "self": {"href": f"{base}/manifest"},
@@ -79,9 +105,7 @@ def _build_manifest() -> dict[str, Any]:
             "workflows": {"href": f"{base}/workflows"},
             "tasks": {"href": f"{base}/tasks"},
             "health": {"href": f"{base}/health"},
-            "tools": {"href": f"{base}/tools"},
             "openapi": {"href": f"{base}/openapi.json"},
-            "errors": {"href": f"{base}/errors"},
         },
     }
 
@@ -91,11 +115,8 @@ async def get_manifest() -> JSONResponse:
     """Return the machine-readable API manifest."""
     manifest = _build_manifest()
 
-    now = int(time.time())
     headers = {
         "X-Schema-Version": settings.api_version,
-        "X-RateLimit-Limit": str(settings.rate_limit_rpm),
-        "X-RateLimit-Reset": str(now + 60),
         "Cache-Control": "public, max-age=60",
     }
 

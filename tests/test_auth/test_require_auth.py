@@ -72,10 +72,6 @@ def _create_test_app(mock_lookup: MockAgentLookup) -> FastAPI:
     async def register() -> dict[str, str]:
         return {"registered": "true"}
 
-    @app.get("/errors")
-    async def errors() -> dict[str, str]:
-        return {"errors": "catalog"}
-
     @app.get("/openapi.json")
     async def openapi_json() -> dict[str, str]:
         return {"openapi": "3.1.0"}
@@ -187,12 +183,6 @@ class TestUnprotectedPaths:
     async def test_register_skips_auth(self, client: AsyncClient) -> None:
         """POST /agents/register does not require authentication."""
         response = await client.post("/agents/register")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_errors_skips_auth(self, client: AsyncClient) -> None:
-        """GET /errors does not require authentication (RFC §4.4)."""
-        response = await client.get("/errors")
         assert response.status_code == 200
 
     @pytest.mark.asyncio
