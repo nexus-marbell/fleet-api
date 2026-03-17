@@ -37,7 +37,7 @@ REPLAY_WINDOW = timedelta(minutes=5)
 # / is the root path, conventionally the manifest or a redirect — kept
 # unprotected for discovery consistency.
 UNPROTECTED_PATHS: frozenset[str] = frozenset(
-    {"/", "/manifest", "/agents/register", "/health", "/errors", "/openapi.json"}
+    {"/", "/manifest", "/agents/register", "/health", "/openapi.json"}
 )
 
 

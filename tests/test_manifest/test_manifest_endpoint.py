@@ -109,7 +109,7 @@ class TestManifestAuth:
 
 
 class TestManifestCapabilities:
-    """Verify capabilities list reflects Phase 1 only."""
+    """Verify capabilities list reflects Phase 1 + Phase 2."""
 
     @pytest.mark.asyncio
     async def test_capabilities_is_list(self, client):
@@ -126,11 +126,30 @@ class TestManifestCapabilities:
         assert "task_dispatch" in caps
 
     @pytest.mark.asyncio
+    async def test_phase2_capabilities_present(self, client):
+        """Phase 2 capabilities are listed."""
+        data = (await client.get("/manifest")).json()
+        caps = data["capabilities"]
+        phase2 = {
+            "sse_streaming",
+            "pause_resume",
+            "context_injection",
+            "retask_with_lineage",
+            "redirect",
+            "callback_signing",
+            "idempotent_writes",
+            "pull_dispatch",
+            "agent_heartbeat",
+        }
+        missing = phase2 - set(caps)
+        assert not missing, f"Missing Phase 2 capabilities: {missing}"
+
+    @pytest.mark.asyncio
     async def test_no_aspirational_capabilities(self, client):
         """Aspirational features not yet implemented are NOT listed."""
         data = (await client.get("/manifest")).json()
         caps = data["capabilities"]
-        aspirational = {"sse_streaming", "webhooks", "batch_operations", "plugins"}
+        aspirational = {"webhooks", "batch_operations", "plugins"}
         present_aspirational = aspirational & set(caps)
         assert not present_aspirational, (
             f"Aspirational capabilities should not be listed: {present_aspirational}"
@@ -138,25 +157,15 @@ class TestManifestCapabilities:
 
 
 class TestManifestRateLimits:
-    """Verify rate limits configuration in manifest."""
+    """Verify rate limits section is honest about enforcement status."""
 
     @pytest.mark.asyncio
-    async def test_rate_limits_structure(self, client):
-        """Rate limits has requests_per_minute and burst."""
+    async def test_rate_limits_marked_as_planned(self, client):
+        """Rate limits status is 'planned' (no enforcement middleware)."""
         data = (await client.get("/manifest")).json()
         rl = data["rate_limits"]
-        assert "requests_per_minute" in rl
-        assert "burst" in rl
-
-    @pytest.mark.asyncio
-    async def test_rate_limits_values_are_integers(self, client):
-        """Rate limit values are positive integers."""
-        data = (await client.get("/manifest")).json()
-        rl = data["rate_limits"]
-        assert isinstance(rl["requests_per_minute"], int)
-        assert isinstance(rl["burst"], int)
-        assert rl["requests_per_minute"] > 0
-        assert rl["burst"] > 0
+        assert rl["status"] == "planned"
+        assert "description" in rl
 
 
 class TestManifestParameterConventions:
@@ -258,11 +267,22 @@ class TestManifestLinks:
 
     @pytest.mark.asyncio
     async def test_required_links(self, client):
-        """All top-level endpoint links are present per RFC section 3.1."""
+        """All top-level endpoint links are present (only real endpoints)."""
         data = (await client.get("/manifest")).json()
         links = data["_links"]
-        required = {"self", "workflows", "health", "tools", "openapi", "errors"}
+        required = {"self", "agents", "workflows", "tasks", "health", "openapi"}
         assert required.issubset(links.keys()), f"Missing links: {required - links.keys()}"
+
+    @pytest.mark.asyncio
+    async def test_no_phantom_links(self, client):
+        """Phantom links to nonexistent endpoints are NOT present."""
+        data = (await client.get("/manifest")).json()
+        links = data["_links"]
+        phantom = {"tools", "errors", "status"}
+        present_phantom = phantom & set(links.keys())
+        assert not present_phantom, (
+            f"Phantom links to nonexistent endpoints: {present_phantom}"
+        )
 
     @pytest.mark.asyncio
     async def test_links_have_href(self, client):
@@ -292,26 +312,12 @@ class TestManifestHeaders:
         assert len(parts) == 3
 
     @pytest.mark.asyncio
-    async def test_rate_limit_header(self, client):
-        """X-RateLimit-Limit header is present."""
+    async def test_no_rate_limit_headers(self, client):
+        """Rate limit headers are NOT sent (no enforcement middleware)."""
         response = await client.get("/manifest")
-        assert "x-ratelimit-limit" in response.headers
-        assert int(response.headers["x-ratelimit-limit"]) > 0
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_remaining_header_absent(self, client):
-        """X-RateLimit-Remaining is NOT sent (real tracking is Phase 3)."""
-        response = await client.get("/manifest")
+        assert "x-ratelimit-limit" not in response.headers
         assert "x-ratelimit-remaining" not in response.headers
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_reset_header(self, client):
-        """X-RateLimit-Reset header is present and is a unix timestamp."""
-        response = await client.get("/manifest")
-        assert "x-ratelimit-reset" in response.headers
-        reset = int(response.headers["x-ratelimit-reset"])
-        # Should be a reasonable unix timestamp (after 2026-01-01)
-        assert reset > 1_767_225_600
+        assert "x-ratelimit-reset" not in response.headers
 
     @pytest.mark.asyncio
     async def test_cache_control_header(self, client):
