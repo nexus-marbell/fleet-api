@@ -33,6 +33,44 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Idempotency check (standalone — used by TaskService and lifecycle ops)
+# ---------------------------------------------------------------------------
+
+
+async def check_idempotency(
+    session: AsyncSession,
+    idempotency_key: str,
+    input_data: dict[str, Any],
+) -> Task | None:
+    """Return an existing task if the idempotency key matches, else None.
+
+    Compares a SHA-256 hash of the canonical JSON input.  If the key exists
+    but the input differs, raises :class:`InputValidationError` (422).
+    """
+    stmt = select(Task).where(Task.idempotency_key == idempotency_key)
+    result = await session.execute(stmt)
+    existing = result.scalar_one_or_none()
+    if existing is None:
+        return None
+
+    existing_hash = hashlib.sha256(
+        json.dumps(existing.input, sort_keys=True).encode()
+    ).hexdigest()
+    new_hash = hashlib.sha256(
+        json.dumps(input_data, sort_keys=True).encode()
+    ).hexdigest()
+
+    if existing_hash == new_hash:
+        return existing
+
+    raise InputValidationError(
+        code=ErrorCode.IDEMPOTENCY_MISMATCH,
+        message=f"Idempotency key '{idempotency_key}' was already used with different input.",
+        suggestion="Use a new idempotency key for different input, or resend the original input.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 
@@ -92,32 +130,9 @@ class TaskService:
     ) -> Task | None:
         """Check for an existing task with the same idempotency key.
 
-        Returns the existing Task if found with matching input (replay).
-        Raises IDEMPOTENCY_MISMATCH if found with different input.
-        Returns None if no existing task found (new creation).
+        Delegates to the module-level :func:`check_idempotency` function.
         """
-        stmt = select(Task).where(Task.idempotency_key == idempotency_key)
-        result = await self.session.execute(stmt)
-        existing = result.scalar_one_or_none()
-
-        if existing is None:
-            return None
-
-        existing_hash = hashlib.sha256(
-            json.dumps(existing.input, sort_keys=True).encode()
-        ).hexdigest()
-        new_hash = hashlib.sha256(json.dumps(input_data, sort_keys=True).encode()).hexdigest()
-
-        if existing_hash == new_hash:
-            return existing
-
-        raise InputValidationError(
-            code=ErrorCode.IDEMPOTENCY_MISMATCH,
-            message=(f"Idempotency key '{idempotency_key}' was already used with different input."),
-            suggestion=(
-                "Use a new idempotency key for different input, or resend the original input."
-            ),
-        )
+        return await check_idempotency(self.session, idempotency_key, input_data)
 
     async def create_task(
         self,
