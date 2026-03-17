@@ -487,7 +487,7 @@ class TestProcessSidecarEventCallbackWiring:
         mock_scalar.scalar_one = MagicMock(return_value=0)
         session.execute = AsyncMock(return_value=mock_scalar)
 
-        with patch("fleet_api.tasks.service.schedule_callback") as mock_schedule:
+        with patch("fleet_api.tasks.sidecar.schedule_callback") as mock_schedule:
             event, returned_task = await process_sidecar_event(
                 session=session,
                 task_id="task-int001",
@@ -526,7 +526,7 @@ class TestProcessSidecarEventCallbackWiring:
         mock_scalar.scalar_one = MagicMock(return_value=0)
         session.execute = AsyncMock(return_value=mock_scalar)
 
-        with patch("fleet_api.tasks.service.schedule_callback") as mock_schedule:
+        with patch("fleet_api.tasks.sidecar.schedule_callback") as mock_schedule:
             await process_sidecar_event(
                 session=session,
                 task_id="task-int002",
@@ -565,7 +565,7 @@ class TestProcessSidecarEventCallbackWiring:
         mock_scalar.scalar_one = MagicMock(return_value=0)
         session.execute = AsyncMock(return_value=mock_scalar)
 
-        with patch("fleet_api.tasks.service.schedule_callback") as mock_schedule:
+        with patch("fleet_api.tasks.sidecar.schedule_callback") as mock_schedule:
             await process_sidecar_event(
                 session=session,
                 task_id="task-int003",
