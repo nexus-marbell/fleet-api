@@ -6,7 +6,7 @@
 # Dan's directive: "need a PR review that follows an EXACT process every
 # single time, don't use a subagent, use the fleet endpoint."
 #
-# 10 steps: 5 pure-code (TOOL/CODE), 5 LLM (multi-model: Haiku→Sonnet→Opus)
+# 11 steps: 6 pure-code (TOOL), 5 LLM (multi-model: Haiku→Sonnet→Opus)
 # Gate actions: FAIL (abort), SKIP (continue with warning)
 #
 # Reference: pre-submission checklist (8 gates, 56+ blockers across 28 PRs)
@@ -36,6 +36,7 @@ input_schema:
       description: Base branch to diff against
     rfc_field_mapping:
       type: string
+      default: "rfc_field_mapping.yaml"
       description: Path to rfc_field_mapping.yaml (if applicable)
 
 output_schema:
@@ -72,7 +73,10 @@ steps:
       git diff {input.base_ref}...{input.ref} --stat --numstat > /tmp/fleet-pr-stat.txt && \
       git diff {input.base_ref}...{input.ref} > /tmp/fleet-pr-diff.txt && \
       git diff {input.base_ref}...{input.ref} --name-only > /tmp/fleet-pr-files.txt && \
-      echo '{"stat": "'$(cat /tmp/fleet-pr-stat.txt | base64 -w0)'", "diff": "'$(cat /tmp/fleet-pr-diff.txt | base64 -w0)'", "files": '$(cat /tmp/fleet-pr-files.txt | jq -R . | jq -s .)'}'
+      jq -n --arg stat "$(cat /tmp/fleet-pr-stat.txt)" \
+             --arg diff "$(cat /tmp/fleet-pr-diff.txt)" \
+             --argjson files "$(cat /tmp/fleet-pr-files.txt | jq -R . | jq -s .)" \
+             '{stat: $stat, diff: $diff, files: $files}'
     gate:
       type: threshold
       spec:
@@ -91,7 +95,11 @@ steps:
     input_from: [diff-extraction]
     command: |
       cd {input.repo_path} && \
-      python3 -m ruff check $(cat /tmp/fleet-pr-files.txt | grep '\.py$' | tr '\n' ' ') --output-format json 2>/dev/null || true
+      if grep -q '\.py$' /tmp/fleet-pr-files.txt; then \
+        python3 -m ruff check $(cat /tmp/fleet-pr-files.txt | grep '\.py$' | tr '\n' ' ') --output-format json 2>/dev/null || true; \
+      else \
+        echo '[]'; \
+      fi
     gate:
       type: custom
       spec:
@@ -118,39 +126,65 @@ steps:
       on_fail: skip
 
   # =========================================================================
-  # STEP 4: Static Analysis (TOOL — pure-code) — Tier 2 scan
+  # STEP 4a: Static Analysis — pyscn (TOOL — pure-code) — Tier 2 scan
   # =========================================================================
-  - id: static-analysis
+  - id: pyscn-scan
     type: tool
-    description: "Run pyscn + deepcsim on changed directories. Fail on CC > 15."
+    description: "Run pyscn on changed directories. Fail if health_score < 50."
     input_from: [diff-extraction]
     command: |
       cd {input.repo_path} && \
       CHANGED_DIRS=$(cat /tmp/fleet-pr-files.txt | xargs -I{} dirname {} | sort -u | tr '\n' ' ') && \
-      pyscn analyze $CHANGED_DIRS --select complexity,dead_code,clones --json 2>/dev/null || echo '{}' && \
-      deepcsim-cli $CHANGED_DIRS --threshold 80 --json 2>/dev/null || echo '[]'
+      pyscn analyze $CHANGED_DIRS --select complexity,dead_code,clones --json 2>/dev/null || echo '{}'
     gate:
       type: threshold
       spec:
-        field: max_cyclomatic_complexity
-        op: lte
-        value: 15
-        message: "Cyclomatic complexity > 15 on new/modified function. Must refactor."
+        field: health_score
+        op: gte
+        value: 50
+        message: "pyscn health_score below 50 — structural issues in changed code."
       on_fail: fail
       max_retries: 0
 
   # =========================================================================
-  # STEP 5: Related Function Discovery (CODE — pure-code helper)
+  # STEP 4b: Static Analysis — deepcsim (TOOL — pure-code) — Tier 2 scan
+  # =========================================================================
+  - id: deepcsim-scan
+    type: tool
+    description: "Run deepcsim on changed directories. Advisory (SKIP on fail)."
+    input_from: [diff-extraction]
+    command: |
+      cd {input.repo_path} && \
+      CHANGED_DIRS=$(cat /tmp/fleet-pr-files.txt | xargs -I{} dirname {} | sort -u | tr '\n' ' ') && \
+      deepcsim-cli $CHANGED_DIRS --threshold 80 --json 2>/dev/null || echo '[]'
+    gate:
+      type: custom
+      spec:
+        check: "len(json.loads(result)) == 0"
+        message: "Semantic clones detected above 80% similarity threshold."
+      on_fail: skip
+
+  # =========================================================================
+  # STEP 5: Related Function Discovery (TOOL — shell, no module dependency)
   # =========================================================================
   - id: find-related-functions
-    type: code
+    type: tool
     description: >
       Find functions in the codebase that parallel the changed functions.
-      Used by cross-feature parity check to compare constraints.
+      Uses rg to extract function names from diff, then searches for similar
+      patterns in the repo. Used by cross-feature parity check.
     input_from: [diff-extraction]
-    function: "fleet_api.pipelines.pr_review.find_related_functions"
-    # Accepts: diff file list, repo path
-    # Returns: dict of {changed_function: [related_functions_with_paths]}
+    command: |
+      cd {input.repo_path} && \
+      CHANGED_FUNCS=$(grep -E '^\+.*def ' /tmp/fleet-pr-diff.txt | sed 's/^+.*def \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/' | sort -u) && \
+      if [ -z "$CHANGED_FUNCS" ]; then \
+        echo '{}'; \
+      else \
+        echo "$CHANGED_FUNCS" | while read -r func; do \
+          RELATED=$(rg -l "def ${func}|${func}\(" --type py . 2>/dev/null | grep -v __pycache__ | head -10 | jq -R . | jq -s .); \
+          echo "{\"function\": \"${func}\", \"related_files\": ${RELATED:-[]}}"; \
+        done | jq -s '{changed_functions: .}'; \
+      fi
 
   # =========================================================================
   # STEP 6: Spec Fidelity Check (LLM — Haiku) — Pre-submission Gate 3
@@ -172,7 +206,7 @@ steps:
       - Check all dict keys in response builders against the canonical mapping.
       - Report violations as structured JSON.
     user_prompt_template: |
-      Diff content (base64-decoded):
+      Diff content:
       {results.diff-extraction.diff}
 
       RFC field mapping:
@@ -240,7 +274,7 @@ steps:
     description: >
       Verify constants are referenced, no unreachable code, SRP per file.
       Check for duplicate event emission sources.
-    input_from: [diff-extraction, static-analysis]
+    input_from: [diff-extraction, pyscn-scan, deepcsim-scan]
     model: sonnet
     system_prompt: |
       You are a code quality reviewer focused on dead code and single responsibility.
@@ -258,19 +292,16 @@ steps:
       Diff:
       {results.diff-extraction.diff}
 
-      Static analysis results:
-      {results.static-analysis}
+      Static analysis (pyscn):
+      {results.pyscn-scan}
+
+      Duplication analysis (deepcsim):
+      {results.deepcsim-scan}
 
       Return JSON: {"dead_code": [...], "srp_violations": [...], "clean": bool}
     max_tokens: 4096
     temperature: 0.0
-    gate:
-      type: schema
-      spec:
-        field: dead_code
-        expected_length: 0
-        message: "Dead code detected."
-      on_fail: skip  # Advisory — Sonnet flags, Opus decides
+    # No gate — advisory step. Sonnet flags issues, Opus decides in step 9.
 
   # =========================================================================
   # STEP 9: Integration Wiring (LLM — Opus) — Gate 8
@@ -319,7 +350,8 @@ steps:
       - diff-extraction
       - lint-gate
       - type-safety-gate
-      - static-analysis
+      - pyscn-scan
+      - deepcsim-scan
       - spec-fidelity
       - cross-feature-check
       - dead-code-srp
@@ -340,7 +372,8 @@ steps:
       Gate results:
       - Lint: {results.lint-gate}
       - Type Safety: {results.type-safety-gate}
-      - Static Analysis: {results.static-analysis}
+      - Static Analysis (pyscn): {results.pyscn-scan}
+      - Duplication (deepcsim): {results.deepcsim-scan}
       - Spec Fidelity: {results.spec-fidelity}
       - Cross-Feature: {results.cross-feature-check}
       - Dead Code/SRP: {results.dead-code-srp}
