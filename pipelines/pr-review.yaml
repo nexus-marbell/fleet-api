@@ -140,7 +140,7 @@ steps:
     gate:
       type: threshold
       spec:
-        field: health_score
+        field: summary.health_score
         op: gte
         value: 50
         message: "pyscn health_score below 50 — structural issues in changed code."
