@@ -135,7 +135,8 @@ steps:
     command: |
       cd {input.repo_path} && \
       CHANGED_DIRS=$(cat /tmp/fleet-pr-files.txt | xargs -I{} dirname {} | sort -u | tr '\n' ' ') && \
-      pyscn analyze $CHANGED_DIRS --select complexity,dead_code,clones --json 2>/dev/null || echo '{}'
+      pyscn analyze $CHANGED_DIRS --select complexity,dead_code,clones --json 2>/dev/null && \
+      cat $(ls -t .pyscn/reports/analyze_*.json | head -1) || echo '{}'
     gate:
       type: threshold
       spec:
@@ -156,11 +157,11 @@ steps:
     command: |
       cd {input.repo_path} && \
       CHANGED_DIRS=$(cat /tmp/fleet-pr-files.txt | xargs -I{} dirname {} | sort -u | tr '\n' ' ') && \
-      deepcsim-cli $CHANGED_DIRS --threshold 80 --json 2>/dev/null || echo '[]'
+      deepcsim-cli $CHANGED_DIRS --threshold 80 --json 2>/dev/null || echo '{"count": 0, "results": []}'
     gate:
       type: custom
       spec:
-        check: "len(json.loads(result)) == 0"
+        check: "json.loads(result).get('count', 0) == 0"
         message: "Semantic clones detected above 80% similarity threshold."
       on_fail: skip
 
