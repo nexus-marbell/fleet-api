@@ -1,0 +1,388 @@
+# PR Review Pipeline — First fleet-api workflow
+#
+# Deterministic PR review that follows an EXACT process every time.
+# Replaces subagent-based review (which degrades at high context).
+#
+# Dan's directive: "need a PR review that follows an EXACT process every
+# single time, don't use a subagent, use the fleet endpoint."
+#
+# 11 steps: 6 pure-code (TOOL), 5 LLM (multi-model: Haiku→Sonnet→Opus)
+# Gate actions: FAIL (abort), SKIP (continue with warning)
+#
+# Reference: pre-submission checklist (8 gates, 56+ blockers across 28 PRs)
+
+pipeline:
+  id: pr-review
+  version: "1.0.0"
+  description: >
+    Deterministic PR review pipeline. Enforces the 8-gate pre-submission
+    checklist with pure-code gates and multi-model LLM review steps.
+  tier: 1  # Agent SDK — needs file access, git ops, static analysis tools
+  estimated_duration_seconds: 120
+
+input_schema:
+  type: object
+  required: [repo_path, ref]
+  properties:
+    repo_path:
+      type: string
+      description: Absolute path to the repository root
+    ref:
+      type: string
+      description: Branch name or PR number to review
+    base_ref:
+      type: string
+      default: main
+      description: Base branch to diff against
+    rfc_field_mapping:
+      type: string
+      default: "rfc_field_mapping.yaml"
+      description: Path to rfc_field_mapping.yaml (if applicable)
+
+output_schema:
+  type: object
+  properties:
+    verdict:
+      type: string
+      enum: [approve, request_changes, comment]
+    gate_results:
+      type: object
+      description: Per-gate pass/fail/skip results
+    comments:
+      type: array
+      items:
+        type: object
+        properties:
+          file: { type: string }
+          line: { type: integer }
+          body: { type: string }
+          severity: { type: string, enum: [error, warning, suggestion] }
+    summary:
+      type: string
+      description: Human-readable review summary
+
+steps:
+  # =========================================================================
+  # STEP 1: Diff Extraction (TOOL — pure-code, no LLM)
+  # =========================================================================
+  - id: diff-extraction
+    type: tool
+    description: Extract git diff, file list, and line counts
+    command: |
+      cd {input.repo_path} && \
+      git diff {input.base_ref}...{input.ref} --stat --numstat > /tmp/fleet-pr-stat.txt && \
+      git diff {input.base_ref}...{input.ref} > /tmp/fleet-pr-diff.txt && \
+      git diff {input.base_ref}...{input.ref} --name-only > /tmp/fleet-pr-files.txt && \
+      jq -n --arg stat "$(cat /tmp/fleet-pr-stat.txt)" \
+             --arg diff "$(cat /tmp/fleet-pr-diff.txt)" \
+             --argjson files "$(cat /tmp/fleet-pr-files.txt | jq -R . | jq -s .)" \
+             '{stat: $stat, diff: $diff, files: $files}'
+    gate:
+      type: threshold
+      spec:
+        field: files
+        op: length_gt
+        value: 0
+      on_fail: fail
+      max_retries: 0
+
+  # =========================================================================
+  # STEP 2: Lint Gate (TOOL — pure-code) — Pre-submission Gate 1
+  # =========================================================================
+  - id: lint-gate
+    type: tool
+    description: "Run ruff check on all modified Python files. HARD FAIL on errors."
+    input_from: [diff-extraction]
+    command: |
+      cd {input.repo_path} && \
+      if grep -q '\.py$' /tmp/fleet-pr-files.txt; then \
+        python3 -m ruff check $(cat /tmp/fleet-pr-files.txt | grep '\.py$' | tr '\n' ' ') --output-format json 2>/dev/null || true; \
+      else \
+        echo '[]'; \
+      fi
+    gate:
+      type: custom
+      spec:
+        check: "len(json.loads(result)) == 0"
+        message: "Ruff lint errors found. Fix before review can proceed."
+      on_fail: fail
+      max_retries: 0
+
+  # =========================================================================
+  # STEP 3: Type Safety Gate (TOOL — pure-code) — Pre-submission Gate 2
+  # =========================================================================
+  - id: type-safety-gate
+    type: tool
+    description: "Run pyright on modified Python files. Advisory (SKIP on fail)."
+    input_from: [diff-extraction]
+    command: |
+      cd {input.repo_path} && \
+      python3 -m pyright $(cat /tmp/fleet-pr-files.txt | grep '\.py$' | tr '\n' ' ') --outputjson 2>/dev/null || true
+    gate:
+      type: custom
+      spec:
+        check: "json.loads(result).get('summary', {}).get('errorCount', 0) == 0"
+        message: "Pyright type errors found (advisory — does not block review)."
+      on_fail: skip
+
+  # =========================================================================
+  # STEP 4a: Static Analysis — pyscn (TOOL — pure-code) — Tier 2 scan
+  # =========================================================================
+  - id: pyscn-scan
+    type: tool
+    description: "Run pyscn on changed directories. Fail if health_score < 50."
+    input_from: [diff-extraction]
+    command: |
+      cd {input.repo_path} && \
+      CHANGED_DIRS=$(cat /tmp/fleet-pr-files.txt | xargs -I{} dirname {} | sort -u | tr '\n' ' ') && \
+      pyscn analyze $CHANGED_DIRS --select complexity,dead_code,clones --json 2>/dev/null && \
+      cat $(ls -t .pyscn/reports/analyze_*.json | head -1) || echo '{}'
+    gate:
+      type: threshold
+      spec:
+        field: summary.health_score
+        op: gte
+        value: 50
+        message: "pyscn health_score below 50 — structural issues in changed code."
+      on_fail: fail
+      max_retries: 0
+
+  # =========================================================================
+  # STEP 4b: Static Analysis — deepcsim (TOOL — pure-code) — Tier 2 scan
+  # =========================================================================
+  - id: deepcsim-scan
+    type: tool
+    description: "Run deepcsim on changed directories. Advisory (SKIP on fail)."
+    input_from: [diff-extraction]
+    command: |
+      cd {input.repo_path} && \
+      CHANGED_DIRS=$(cat /tmp/fleet-pr-files.txt | xargs -I{} dirname {} | sort -u | tr '\n' ' ') && \
+      deepcsim-cli $CHANGED_DIRS --threshold 80 --json 2>/dev/null || echo '{"count": 0, "results": []}'
+    gate:
+      type: custom
+      spec:
+        check: "json.loads(result).get('count', 0) == 0"
+        message: "Semantic clones detected above 80% similarity threshold."
+      on_fail: skip
+
+  # =========================================================================
+  # STEP 5: Related Function Discovery (TOOL — shell, no module dependency)
+  # =========================================================================
+  - id: find-related-functions
+    type: tool
+    description: >
+      Find functions in the codebase that parallel the changed functions.
+      Uses rg to extract function names from diff, then searches for similar
+      patterns in the repo. Used by cross-feature parity check.
+    input_from: [diff-extraction]
+    command: |
+      cd {input.repo_path} && \
+      CHANGED_FUNCS=$(grep -E '^\+.*def ' /tmp/fleet-pr-diff.txt | sed 's/^+.*def \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/' | sort -u) && \
+      if [ -z "$CHANGED_FUNCS" ]; then \
+        echo '{}'; \
+      else \
+        echo "$CHANGED_FUNCS" | while read -r func; do \
+          RELATED=$(rg -l "def ${func}|${func}\(" --type py . 2>/dev/null | grep -v __pycache__ | head -10 | jq -R . | jq -s .); \
+          echo "{\"function\": \"${func}\", \"related_files\": ${RELATED:-[]}}"; \
+        done | jq -s '{changed_functions: .}'; \
+      fi
+
+  # =========================================================================
+  # STEP 6: Spec Fidelity Check (LLM — Haiku) — Pre-submission Gate 3
+  # =========================================================================
+  - id: spec-fidelity
+    type: llm
+    description: >
+      Check every response field in the diff against RFC canonical names.
+      Haiku is sufficient — this is extraction, not judgment.
+    input_from: [diff-extraction]
+    model: haiku
+    system_prompt: |
+      You are a spec compliance checker. Your ONLY job is to verify that
+      API response field names match the RFC specification exactly.
+
+      Rules:
+      - 'caller' not 'principal_agent_id'
+      - 'executor' not 'executor_agent_id'
+      - Check all dict keys in response builders against the canonical mapping.
+      - Report violations as structured JSON.
+    user_prompt_template: |
+      Diff content:
+      {results.diff-extraction.diff}
+
+      RFC field mapping:
+      {input.rfc_field_mapping}
+
+      Return JSON: {"violations": [{"file": str, "line": int, "field": str, "expected": str}], "clean": bool}
+    max_tokens: 2048
+    temperature: 0.0
+    gate:
+      type: schema
+      spec:
+        field: clean
+        expected: true
+        message: "RFC field name violations found."
+      on_fail: fail
+      max_retries: 0
+
+  # =========================================================================
+  # STEP 7: Cross-Feature Parity + Namespace (LLM — Sonnet) — Gates 4-5
+  # =========================================================================
+  - id: cross-feature-check
+    type: llm
+    description: >
+      Compare changed functions against related existing functions.
+      Verify constraint parity (depth limits, auth checks, state validation).
+      Check namespace independence (shared tables, event types, sequences).
+    input_from: [diff-extraction, find-related-functions]
+    model: sonnet
+    system_prompt: |
+      You are a cross-feature parity reviewer. Compare new/changed functions
+      against their structural parallels in the codebase.
+
+      Check for:
+      1. Missing constraints that the parallel function has (depth limits, auth, validation)
+      2. Shared column semantics — is the name still correct for both uses?
+      3. Namespace entanglement — would feature A's query pick up feature B's data?
+      4. Sequence independence — feature-specific vs global sequences
+
+      Be precise. Report only real issues, not style preferences.
+    user_prompt_template: |
+      Changed functions (from diff):
+      {results.diff-extraction.diff}
+
+      Related functions found:
+      {results.find-related-functions}
+
+      Return JSON: {"parity_issues": [...], "namespace_issues": [...], "clean": bool}
+    max_tokens: 4096
+    temperature: 0.0
+    gate:
+      type: schema
+      spec:
+        field: clean
+        expected: true
+        message: "Cross-feature parity or namespace issues found."
+      on_fail: fail
+      max_retries: 2
+      feedback_template: "Fix these parity/namespace issues: {gate_result.issues}"
+
+  # =========================================================================
+  # STEP 8: Dead Code + SRP (LLM — Sonnet) — Gates 6-7
+  # =========================================================================
+  - id: dead-code-srp
+    type: llm
+    description: >
+      Verify constants are referenced, no unreachable code, SRP per file.
+      Check for duplicate event emission sources.
+    input_from: [diff-extraction, pyscn-scan, deepcsim-scan]
+    model: sonnet
+    system_prompt: |
+      You are a code quality reviewer focused on dead code and single responsibility.
+
+      Check for:
+      1. Constants defined but never referenced (grep the codebase)
+      2. Try/except blocks guarding impossible conditions
+      3. Variables assigned but unused
+      4. Files that do more than one thing (describe in one sentence without "and")
+      5. Duplicate event emission (same event from two sources)
+      6. Unbounded collection growth
+
+      Use the static analysis results to inform your review.
+    user_prompt_template: |
+      Diff:
+      {results.diff-extraction.diff}
+
+      Static analysis (pyscn):
+      {results.pyscn-scan}
+
+      Duplication analysis (deepcsim):
+      {results.deepcsim-scan}
+
+      Return JSON: {"dead_code": [...], "srp_violations": [...], "clean": bool}
+    max_tokens: 4096
+    temperature: 0.0
+    # No gate — advisory step. Sonnet flags issues, Opus decides in step 9.
+
+  # =========================================================================
+  # STEP 9: Integration Wiring (LLM — Opus) — Gate 8
+  # =========================================================================
+  - id: integration-wiring
+    type: llm
+    description: >
+      Verify cross-feature wiring is tested. Side effects are covered.
+      This is the judgment step — Opus decides if test coverage is adequate.
+    input_from: [diff-extraction, cross-feature-check, dead-code-srp]
+    model: opus
+    system_prompt: |
+      You are a senior engineer reviewing integration test coverage.
+
+      Check:
+      1. If feature A triggers feature B, is there a test verifying the wiring?
+      2. If a route handler calls a service function with side effects, are they tested?
+      3. Are edge cases at feature boundaries covered?
+
+      You are the judgment gate. If coverage is adequate, say so. If not,
+      list exactly what tests are missing and why they matter.
+    user_prompt_template: |
+      Diff:
+      {results.diff-extraction.diff}
+
+      Cross-feature analysis:
+      {results.cross-feature-check}
+
+      Dead code / SRP analysis:
+      {results.dead-code-srp}
+
+      Return JSON: {"missing_tests": [...], "coverage_adequate": bool, "notes": str}
+    max_tokens: 4096
+    temperature: 0.0
+    # No gate — Opus IS the gate. Its judgment flows to synthesis.
+
+  # =========================================================================
+  # STEP 10: Review Synthesis (LLM — Opus)
+  # =========================================================================
+  - id: review-synthesis
+    type: llm
+    description: >
+      Synthesize all gate results into a structured PR review.
+      Produce the final verdict: approve, request_changes, or comment.
+    input_from:
+      - diff-extraction
+      - lint-gate
+      - type-safety-gate
+      - pyscn-scan
+      - deepcsim-scan
+      - spec-fidelity
+      - cross-feature-check
+      - dead-code-srp
+      - integration-wiring
+    model: opus
+    system_prompt: |
+      You are producing the final PR review. You have results from 8 analysis
+      steps. Synthesize them into a clear, actionable review.
+
+      Rules:
+      - If ANY hard gate failed (lint, spec fidelity, complexity), verdict is request_changes
+      - If integration wiring found missing tests, verdict is request_changes
+      - If only advisory issues (type safety, dead code), verdict is comment
+      - If everything is clean, verdict is approve
+      - Be specific. Every comment must reference a file and line.
+      - Do not repeat what the gates already said — synthesize.
+    user_prompt_template: |
+      Gate results:
+      - Lint: {results.lint-gate}
+      - Type Safety: {results.type-safety-gate}
+      - Static Analysis (pyscn): {results.pyscn-scan}
+      - Duplication (deepcsim): {results.deepcsim-scan}
+      - Spec Fidelity: {results.spec-fidelity}
+      - Cross-Feature: {results.cross-feature-check}
+      - Dead Code/SRP: {results.dead-code-srp}
+      - Integration Wiring: {results.integration-wiring}
+
+      Diff summary:
+      {results.diff-extraction.stat}
+
+      Produce the final review as JSON matching the pipeline output_schema.
+    max_tokens: 8192
+    temperature: 0.0
